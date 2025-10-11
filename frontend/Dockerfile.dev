@@ -1,0 +1,18 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies first (for better caching)
+COPY package*.json ./
+RUN npm cache clean --force
+RUN npm install --legacy-peer-deps || npm install --force
+
+# Copy application code
+COPY . .
+
+# Expose port
+EXPOSE 3000
+
+# Use the Docker-specific Vite config
+CMD ["npm", "run", "dev", "--", "--config", "vite.config.docker.js", "--host", "0.0.0.0"]
+
