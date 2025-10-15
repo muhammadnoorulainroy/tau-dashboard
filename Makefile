@@ -1,96 +1,101 @@
-.PHONY: help setup start stop restart logs clean build dev prod test
+.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-reset generate-secret
 
 # Default target
 help:
-	@echo "TAU Dashboard - Available Commands"
-	@echo "=================================="
-	@echo "make setup    - Initial setup and configuration"
-	@echo "make start    - Start all services"
-	@echo "make stop     - Stop all services"
-	@echo "make restart  - Restart all services"
-	@echo "make logs     - View logs from all services"
-	@echo "make clean    - Clean up containers and volumes"
-	@echo "make build    - Build Docker images"
-	@echo "make dev      - Start in development mode"
-	@echo "make prod     - Start in production mode"
-	@echo "make test     - Run tests"
-	@echo "make sync     - Trigger manual GitHub sync"
+	@echo "TAU Dashboard - Local Development Commands"
+	@echo "=========================================="
+	@echo "make setup          - Initial setup (install dependencies)"
+	@echo "make install        - Install all dependencies"
+	@echo "make start-backend  - Start backend server"
+	@echo "make start-frontend - Start frontend dev server"
+	@echo "make start          - Start both backend and frontend (in separate terminals)"
+	@echo "make test           - Run tests"
+	@echo "make sync           - Trigger manual GitHub sync"
+	@echo "make db-init        - Initialize database"
+	@echo "make db-reset       - Reset database"
+	@echo "make generate-secret - Generate a secure SECRET_KEY"
+	@echo "make clean          - Clean up generated files"
 
-# Setup environment
-setup:
-	@echo "Setting up TAU Dashboard..."
-	@chmod +x setup.sh
-	@./setup.sh
+# Initial setup
+setup: install
+	@echo "✅ Setup complete!"
+	@echo ""
+	@echo "Next steps:"
+	@echo "1. Make sure PostgreSQL is running"
+	@echo "2. Create database: createdb tau_dashboard"
+	@echo "3. Configure environment:"
+	@echo "   - Backend:  Edit backend/.env.dev and add your GITHUB_TOKEN"
+	@echo "   - Frontend: Edit frontend/.env.dev if you need custom ports"
+	@echo "   - Default: Backend on port 8000, Frontend on port 3000"
+	@echo "4. Run 'make start-backend' in one terminal"
+	@echo "5. Run 'make start-frontend' in another terminal"
 
-# Start services
+# Install all dependencies
+install: install-backend install-frontend
+	@echo "✅ All dependencies installed"
+
+# Install backend dependencies
+install-backend:
+	@echo "📦 Installing backend dependencies..."
+	cd backend && pip install -r requirements.txt
+
+# Install frontend dependencies
+install-frontend:
+	@echo "📦 Installing frontend dependencies..."
+	cd frontend && npm install
+
+# Start backend server
+start-backend:
+	@echo "🚀 Starting backend server..."
+	@echo "Creating backend .env symlink if needed..."
+	@cd backend && [ -f .env ] || ln -s .env.dev .env
+	@echo "Starting backend (check backend/.env.dev for port configuration)..."
+	cd backend && uvicorn main:app --reload
+
+# Start frontend dev server
+start-frontend:
+	@echo "🚀 Starting frontend dev server..."
+	@echo "Creating frontend .env symlink if needed..."
+	@cd frontend && [ -f .env ] || ln -s .env.dev .env
+	@echo "Starting frontend (check frontend/.env.dev for port configuration)..."
+	cd frontend && npm run dev
+
+# Start both (note: requires two terminals)
 start:
-	docker-compose up -d
-	@echo "Services started. Access the dashboard at http://localhost:3000"
-
-# Stop services
-stop:
-	docker-compose down
-
-# Restart services
-restart: stop start
-
-# View logs
-logs:
-	docker-compose logs -f
-
-# Clean up
-clean:
-	docker-compose down -v
-	@echo "Containers and volumes cleaned up"
-
-# Build images
-build:
-	docker-compose build
-
-# Development mode
-dev:
-	docker-compose up
-
-# Production mode
-prod:
-	docker-compose -f docker-compose.prod.yml up -d
+	@echo "⚠️  You need to run these commands in separate terminals:"
+	@echo "Terminal 1: make start-backend"
+	@echo "Terminal 2: make start-frontend"
 
 # Run tests
 test:
-	@echo "Running backend tests..."
-	cd backend && python -m pytest
-	@echo "Running frontend tests..."
-	cd frontend && npm test
+	@echo "🧪 Running tests..."
+	@cd backend && python -m pytest || echo "pytest not configured yet"
 
 # Trigger manual sync
 sync:
+	@echo "🔄 Triggering GitHub sync..."
 	curl -X POST http://localhost:8000/api/sync
 
-# Install dependencies locally
-install-backend:
-	cd backend && pip install -r requirements.txt
-
-install-frontend:
-	cd frontend && npm install
-
-install: install-backend install-frontend
-
-# Database operations
+# Initialize database
 db-init:
-	docker-compose exec backend python -c "from database import init_db; init_db()"
+	@echo "🗄️  Initializing database..."
+	cd backend && python -c "from database import init_db; init_db()"
 
+# Reset database
 db-reset:
-	docker-compose exec postgres psql -U postgres -d tau_dashboard -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+	@echo "⚠️  Resetting database..."
+	psql -U postgres -d tau_dashboard -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" || echo "Make sure PostgreSQL is running"
 	make db-init
 
-# Development helpers
-backend-shell:
-	docker-compose exec backend /bin/bash
+# Generate secure secret key
+generate-secret:
+	@python3 generate_secret.py
 
-frontend-shell:
-	docker-compose exec frontend /bin/sh
-
-db-shell:
-	docker-compose exec postgres psql -U postgres -d tau_dashboard
-
-
+# Clean up
+clean:
+	@echo "🧹 Cleaning up..."
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name "node_modules" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name "dist" -exec rm -rf {} + 2>/dev/null || true
+	@echo "✅ Clean complete"

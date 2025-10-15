@@ -55,9 +55,6 @@ dist-ssr/
 .env
 .env.local
 .env.*.local
-.env.production
-.env.development
-.env.test
 backend/.env
 frontend/.env
 config.local.py
@@ -67,10 +64,11 @@ secrets.py
 *.secret
 *.secrets
 
-# Allow example files
-!.env.example
-!backend/.env.example
-!frontend/.env.example
+# Allow template files (tracked in git)
+!backend/.env.dev
+!backend/.env.production
+!frontend/.env.dev
+!frontend/.env.production
 
 # Database
 *.db
