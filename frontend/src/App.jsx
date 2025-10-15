@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Toaster } from 'react-hot-toast';
+import toast, { Toaster } from 'react-hot-toast';
 import Dashboard from './components/Dashboard';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -34,12 +34,11 @@ function App() {
       if (data.type === 'data_updated' || data.type === 'sync_complete') {
         setLastUpdate(new Date());
         
-        // If sync complete, show success message
-        if (data.type === 'sync_complete' && data.data) {
-          const { synced_count, sync_type } = data.data;
-          // Dismiss loading toast and show success
-          const toast = require('react-hot-toast').default;
-          toast.dismiss('sync-progress');
+      // If sync complete, show success message
+      if (data.type === 'sync_complete' && data.data) {
+        const { synced_count, sync_type } = data.data;
+        // Dismiss loading toast and show success
+        toast.dismiss('sync-progress');
           
           if (sync_type === 'full') {
             toast.success(`✅ Full sync complete! Synced ${synced_count} PRs`, {

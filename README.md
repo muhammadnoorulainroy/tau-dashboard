@@ -1,180 +1,253 @@
 # TAU Dashboard
 
-A comprehensive dashboard for tracking Pull Request metrics, developer productivity, and review processes for the Amazon TAU Bench Tasks repository.
+A comprehensive dashboard for tracking Pull Request metrics, developer productivity, and review processes.
 
-![TAU Dashboard](https://img.shields.io/badge/version-1.0.0-success)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![React](https://img.shields.io/badge/react-18.2-blue)
 ![FastAPI](https://img.shields.io/badge/fastapi-0.104-green)
 
 ## Features
 
-### Real-time Metrics
 - **Developer Metrics**: Track PRs raised per developer, rework count, merge rates
 - **Reviewer Metrics**: Monitor review counts, approval rates, and review patterns
 - **Domain Analytics**: View task distribution across different domains
-- **PR State Tracking**: Monitor PR states using GitHub labels (expert review pending, ready to merge, etc.)
+- **PR State Tracking**: Monitor PR states using GitHub labels
+- **Real-time Updates**: WebSocket-based live updates
+- **Smart Synchronization**: Intelligent sync strategy (full vs incremental)
 
-### Modern UI Design
-- Clean, professional interface with warm color palette (orange, green, gray)
-- Responsive design that works on all devices
-- Real-time updates via WebSocket connections
-- Interactive charts and visualizations using Recharts
+## Prerequisites
 
-### Advanced Filtering
-- Filter PRs by specific naming patterns
-- Track only PRs with relevant tags
-- Support for both open and merged PRs
-- Efficient handling of thousands of PRs
+Before you begin, make sure you have the following installed:
 
-### Smart Synchronization
-- Intelligent sync strategy (full vs incremental)
-- Non-blocking background operations
-- Automatic sync every 5 minutes for new updates
-- Manual sync with real-time progress notifications
+- **Python 3.11+** - [Download Python](https://www.python.org/downloads/)
+- **Node.js 18+** - [Download Node.js](https://nodejs.org/)
+- **PostgreSQL 15+** - [Download PostgreSQL](https://www.postgresql.org/download/)
 
-## Requirements
+## Quick Start
 
-- Docker & Docker Compose
-- Node.js 18+ (for local development)
-- Python 3.11+ (for local development)
-- PostgreSQL 15+
-- Redis (for caching and background tasks)
+### 1. Clone the Repository
 
-## Installation
-
-### Using Docker (Recommended)
-
-1. Clone the repository:
 ```bash
 git clone <repository-url>
 cd tau-dashboard
 ```
 
-2. Start the services:
+### 2. Install Dependencies
+
 ```bash
-docker-compose up -d
+make install
 ```
 
-3. Access the dashboard:
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- API Documentation: http://localhost:8000/docs
+This will install both backend and frontend dependencies.
 
-### Local Development Setup
+### 3. Set Up PostgreSQL Database
 
-#### Backend Setup
+Create the database:
 
-1. Navigate to backend directory:
+```bash
+createdb tau_dashboard
+```
+
+Or using psql:
+
+```bash
+psql -U postgres
+CREATE DATABASE tau_dashboard;
+\q
+```
+
+### 4. Configure Environment Variables
+
+The project uses separate environment files for backend and frontend:
+
+**Backend Configuration:**
+- `backend/.env.dev` - Backend development configuration
+- `backend/.env.production` - Backend production configuration
+- `backend/.env` - Symlink to active environment
+
+**Frontend Configuration:**
+- `frontend/.env.dev` - Frontend development configuration
+- `frontend/.env.production` - Frontend production configuration
+- `frontend/.env` - Symlink to active environment
+
+**For Development:**
+
+Edit backend configuration:
+
+```bash
+# Edit the backend config
+nano backend/.env.dev
+```
+
+```env
+# Backend Server Configuration
+BACKEND_HOST=0.0.0.0
+BACKEND_PORT=8000
+FRONTEND_URL=http://localhost:3000
+
+# GitHub Configuration
+GITHUB_TOKEN=ghp_your_github_token_here
+GITHUB_REPO=TuringGpt/amazon-tau-bench-tasks
+
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=postgres
+DB_NAME=tau_dashboard
+
+# Security
+SECRET_KEY=change-this-secret-key
+```
+
+Edit frontend configuration (optional - only if you need custom ports):
+
+```bash
+nano frontend/.env.dev
+```
+
+```env
+# Frontend Server Configuration
+VITE_FRONTEND_PORT=3000
+VITE_BACKEND_URL=http://localhost:8000
+
+# API Configuration
+VITE_API_BASE_URL=/api
+VITE_WS_URL=ws://localhost:8000/ws
+```
+
+**Configuration Options:**
+
+**Backend:**
+- `BACKEND_HOST` - Host to bind backend server (default: 0.0.0.0)
+- `BACKEND_PORT` - Backend port (default: 8000)
+- `FRONTEND_URL` - Frontend URL for CORS (default: http://localhost:3000)
+- `DB_HOST` - Database hostname
+- `DB_PORT` - Database port (default: 5432)
+- `DB_USER` - Database username
+- `DB_PASSWORD` - Database password
+- `DB_NAME` - Database name
+- `SECRET_KEY` - Security key (generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"`)
+
+**Frontend:**
+- `VITE_FRONTEND_PORT` - Frontend dev server port (default: 3000)
+- `VITE_BACKEND_URL` - Backend API URL (default: http://localhost:8000)
+
+**Get your GitHub token:**
+1. Go to GitHub Settings → Developer settings → Personal access tokens
+2. Generate a new token (classic) with `repo` scope
+3. Copy the token and paste it in `backend/.env.dev`
+
+**For Production:**
+
+Edit production configs and point `.env` symlinks to production files:
+
+```bash
+cd backend && ln -sf .env.production .env && cd ..
+cd frontend && ln -sf .env.production .env && cd ..
+```
+
+### 5. Initialize Database
+
+```bash
+make db-init
+```
+
+### 6. Start the Application
+
+You'll need two terminal windows:
+
+**Terminal 1 - Backend:**
+```bash
+make start-backend
+```
+
+**Terminal 2 - Frontend:**
+```bash
+make start-frontend
+```
+
+### 7. Access the Dashboard
+
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+
+## Development
+
+### Backend Development
+
+The backend is built with FastAPI and uses:
+- **FastAPI** - Modern web framework
+- **SQLAlchemy** - ORM for database operations
+- **PostgreSQL** - Database
+- **PyGithub** - GitHub API integration
+
+Backend files are in the `backend/` directory.
+
+To run backend only:
 ```bash
 cd backend
-```
-
-2. Create a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Set up PostgreSQL:
-```bash
-# Create database
-psql -U postgres -c "CREATE DATABASE tau_dashboard;"
-```
-
-5. Run the backend:
-```bash
 uvicorn main:app --reload
 ```
 
-#### Frontend Setup
+### Frontend Development
 
-1. Navigate to frontend directory:
+The frontend is built with React and Vite:
+- **React 18** - UI library
+- **Vite** - Build tool and dev server
+- **Tailwind CSS** - Styling
+- **Recharts** - Charts and visualizations
+- **Axios** - HTTP client
+
+Frontend files are in the `frontend/` directory.
+
+To run frontend only:
 ```bash
 cd frontend
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Start the development server:
-```bash
 npm run dev
 ```
 
-## Configuration
+### Project Structure
 
-### Environment Variables Setup
+```
+tau-dashboard/
+├── backend/
+│   ├── main.py              # FastAPI application
+│   ├── database.py          # Database models and setup
+│   ├── github_service.py    # GitHub API integration
+│   ├── background_tasks.py  # Background sync tasks
+│   ├── schemas.py           # Pydantic schemas
+│   ├── config.py            # Configuration
+│   └── requirements.txt     # Python dependencies
+├── frontend/
+│   ├── src/
+│   │   ├── components/      # React components
+│   │   ├── services/        # API services
+│   │   ├── App.jsx          # Main app component
+│   │   └── main.jsx         # Entry point
+│   ├── package.json         # Node dependencies
+│   └── vite.config.js       # Vite configuration
+├── Makefile                 # Development commands
+└── README.md
+```
 
-The application uses environment variables for all sensitive configuration. **Never hardcode secrets in the code.**
-
-#### Step 1: Create .env file
+## Available Commands
 
 ```bash
-# Copy the example file
-cp .env.example .env
-
-# Edit .env with your actual credentials
-# nano .env  # or use any text editor
+make help           # Show all available commands
+make setup          # Initial setup
+make install        # Install all dependencies
+make start-backend  # Start backend server
+make start-frontend # Start frontend dev server
+make test           # Run tests
+make sync           # Trigger GitHub sync
+make db-init        # Initialize database
+make db-reset       # Reset database
+make clean          # Clean up generated files
 ```
-
-#### Step 2: Configure Required Variables
-
-Edit `.env` and set these **required** variables:
-
-```env
-# GitHub Configuration - REQUIRED
-GITHUB_TOKEN=ghp_your_actual_github_token_here
-GITHUB_REPO=your-org/your-repo-name
-
-# Database Configuration
-DATABASE_URL=postgresql://postgres:postgres@localhost/tau_dashboard
-DB_PASSWORD=postgres
-
-# Redis Configuration
-REDIS_URL=redis://localhost:6379
-
-# Security - REQUIRED for production
-SECRET_KEY=your-strong-secret-key-here
-```
-
-### GitHub Token Setup
-
-1. Go to GitHub Settings > Developer settings > Personal access tokens
-2. Generate a new token (classic) with `repo` scope
-3. Copy the token and set it as `GITHUB_TOKEN` in your `.env` file
-4. **Never commit this token to version control**
-
-### Security Notes
-
-- `.env` files are in `.gitignore` and will not be committed
-- Use `.env.example` as a template (safe to commit)
-- `backend/config.py` reads from environment variables automatically via pydantic-settings
-- Docker Compose reads from `.env` file in the root directory
-- Required fields: `GITHUB_TOKEN`, `GITHUB_REPO` (app will fail to start without them)
-
-## Database Schema
-
-The dashboard uses PostgreSQL with the following main tables:
-
-- **pull_requests**: Stores PR data including title, state, labels, and metrics
-- **developers**: Aggregated developer metrics
-- **reviewers**: Aggregated reviewer metrics
-- **reviews**: Individual review records
-- **check_runs**: CI/CD check results
-- **domain_metrics**: Domain-level aggregated metrics
-- **sync_state**: Tracks synchronization history and timestamps
 
 ## API Endpoints
-
-### Core Endpoints
 
 - `GET /api/overview` - Dashboard overview metrics
 - `GET /api/developers` - Developer metrics
@@ -185,103 +258,45 @@ The dashboard uses PostgreSQL with the following main tables:
 - `POST /api/sync` - Trigger manual GitHub sync
 - `WS /ws` - WebSocket for real-time updates
 
-### API Documentation
+Full API documentation: http://localhost:8000/docs
 
-Full API documentation is available at http://localhost:8000/docs (Swagger UI)
+## Database Management
 
-## UI Components
-
-### Dashboard Views
-
-1. **Main Dashboard**: Overview metrics, charts, and recent activity
-2. **Developers View**: Detailed developer metrics and performance
-3. **Reviewers View**: Review statistics and patterns
-4. **Domains View**: Domain-specific metrics and task distribution
-5. **Pull Requests View**: Detailed PR list with advanced filtering
-
-### Key Metrics Tracked
-
-- **Developer Metrics**:
-  - Total PRs raised
-  - Open vs Merged PRs
-  - Rework count (based on feedback and failed checks)
-  - Domain distribution
-
-- **Reviewer Metrics**:
-  - Total reviews conducted
-  - Approval vs Changes requested ratio
-  - Review distribution across domains
-
-- **Domain Metrics**:
-  - Task count by state (using PR labels)
-  - Difficulty distribution
-  - Top contributors
-
-## Data Synchronization
-
-The dashboard uses an intelligent synchronization strategy:
-
-### Sync Types
-
-1. **Initial Sync**: Fetches last 60 days of PR data on first run
-2. **Full Sync**: Re-fetches last 60 days when last sync was more than 7 days ago
-3. **Incremental Sync**: Fetches only recent changes since last sync (runs every 5 minutes)
-4. **Manual Sync**: Trigger via the UI sync button with fire-and-forget mechanism
-
-### Non-blocking Operations
-
-- All sync operations run in background threads to prevent UI blocking
-- WebSocket notifications provide real-time progress updates
-- Sync history tracked in database for intelligent decision-making
-
-## Performance Considerations
-
-- Efficient database indexing for fast queries
-- Pagination for large datasets
-- Background tasks for heavy operations
-- WebSocket for real-time updates without polling
-- Caching with Redis for frequently accessed data
-- ThreadPoolExecutor for concurrent processing
-
-## PR Pattern Recognition
-
-The dashboard recognizes PRs with the following naming pattern:
-```
-username-domain-difficulty-taskid
-```
-
-Examples:
-- `daniel.kurui-hr_experts-4-expert-1760036183`
-- `naincy.c-fund_finance-1-expert-1760024946`
-
-Only PRs matching this pattern and having relevant tags are tracked.
-
-## Supported PR Labels
-
-- `expert review pending`
-- `calibrator review pending`
-- `expert approved`
-- `ready to merge`
-- `expert`
-- `hard`
-- `medium`
-- `good task`
-
-## Deployment
-
-### Production Deployment
-
-1. Update environment variables for production
-2. Use proper secrets management
-3. Set up SSL/TLS certificates
-4. Configure reverse proxy (nginx/traefik)
-5. Set up monitoring and logging
-
-### Docker Production Build
-
+### Initialize Database
 ```bash
-docker-compose -f docker-compose.prod.yml up -d
+make db-init
 ```
+
+### Reset Database
+```bash
+make db-reset
+```
+
+### Direct Database Access
+```bash
+psql -U postgres -d tau_dashboard
+```
+
+## Troubleshooting
+
+### Database Connection Error
+- Make sure PostgreSQL is running: `pg_ctl status`
+- Check if database exists: `psql -l`
+- Verify credentials in `.env` file
+
+### Port Already in Use
+- Backend (8000): Check if another app is using port 8000
+- Frontend (3000): Check if another app is using port 3000
+- Use `lsof -i :8000` or `lsof -i :3000` to find the process
+
+### GitHub API Rate Limiting
+- Make sure you're using a valid GitHub token
+- Token should have `repo` scope
+- Check rate limit: `curl -H "Authorization: token YOUR_TOKEN" https://api.github.com/rate_limit`
+
+### Module Not Found Errors
+- Backend: Make sure you're in the virtual environment
+- Frontend: Try deleting `node_modules` and running `npm install` again
 
 ## Contributing
 
@@ -295,58 +310,6 @@ docker-compose -f docker-compose.prod.yml up -d
 
 This project is proprietary and confidential.
 
-## Troubleshooting
-
-### Common Issues
-
-1. **Database Connection Error**
-   - Ensure PostgreSQL is running
-   - Check database credentials
-   - Verify database exists
-
-2. **GitHub API Rate Limiting**
-   - Use a valid GitHub token
-   - Implement caching strategies
-   - Reduce sync frequency if needed
-
-3. **Frontend Build Issues**
-   - Clear node_modules and reinstall
-   - Check Node.js version compatibility
-   - Verify all dependencies are installed
-
-### Logs
-
-- Backend logs: `docker-compose logs backend`
-- Frontend logs: `docker-compose logs frontend`
-- Database logs: `docker-compose logs postgres`
-
 ## Support
 
 For issues or questions, please create an issue in the GitHub repository.
-
-## Technology Stack
-
-### Backend
-- **FastAPI**: Modern, fast web framework for building APIs
-- **SQLAlchemy**: SQL toolkit and ORM
-- **PostgreSQL**: Relational database for data persistence
-- **PyGithub**: Python library for GitHub API v3
-- **Redis**: In-memory data structure store for caching
-- **WebSockets**: Real-time bidirectional communication
-
-### Frontend
-- **React**: JavaScript library for building user interfaces
-- **Vite**: Next-generation frontend build tool
-- **Tailwind CSS**: Utility-first CSS framework
-- **Recharts**: Composable charting library built on React components
-- **Axios**: Promise-based HTTP client
-- **date-fns**: Modern JavaScript date utility library
-
-### DevOps
-- **Docker**: Containerization platform
-- **Docker Compose**: Multi-container Docker orchestration
-- **Nginx**: High-performance HTTP server and reverse proxy
-
----
-
-Built for efficient PR management and team productivity tracking.

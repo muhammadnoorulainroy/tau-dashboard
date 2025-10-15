@@ -100,10 +100,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+# CORS middleware - import settings at the top of this file
+from config import settings
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[settings.frontend_url, "http://localhost:5173"],  # Allow configured frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -533,5 +535,6 @@ def get_timeline_stats(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    from config import settings
+    uvicorn.run(app, host=settings.backend_host, port=settings.backend_port, reload=True)
 
