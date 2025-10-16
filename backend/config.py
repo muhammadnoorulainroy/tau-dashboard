@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 
 class Settings(BaseSettings):
     """
@@ -30,6 +30,19 @@ class Settings(BaseSettings):
     
     # Security - REQUIRED
     secret_key: str
+    
+    # Recognized Domains - domains not in this list will be grouped as "Others"
+    recognized_domains: List[str] = [
+        'enterprise_wiki',
+        'finance',
+        'fund_finance',
+        'hr_experts',
+        'hr_management',
+        'hr_payroll',
+        'incident_management',
+        'it_incident_management',
+        'smart_home'
+    ]
     
     @property
     def database_url(self) -> str:

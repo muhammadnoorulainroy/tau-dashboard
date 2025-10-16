@@ -28,6 +28,8 @@ class PullRequest(Base):
     
     # GitHub data
     author_login = Column(String, index=True)
+    author_email = Column(String, nullable=True)  # Fetched from GitHub API
+    
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
     closed_at = Column(DateTime, nullable=True)

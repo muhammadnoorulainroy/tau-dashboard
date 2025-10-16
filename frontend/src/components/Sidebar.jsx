@@ -14,6 +14,7 @@ const navigation = [
   { name: 'Reviewers', value: 'reviewers', icon: ClipboardDocumentCheckIcon },
   { name: 'Domains', value: 'domains', icon: FolderIcon },
   { name: 'Pull Requests', value: 'pull-requests', icon: DocumentTextIcon },
+  { name: 'Aggregation', value: 'aggregation', icon: ChartBarIcon },
 ];
 
 const Sidebar = ({ activeView, setActiveView, isOpen }) => {

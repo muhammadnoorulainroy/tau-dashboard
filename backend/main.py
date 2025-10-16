@@ -17,7 +17,7 @@ from sync_state import should_do_full_sync, get_last_sync_time, get_sync_descrip
 from schemas import (
     DeveloperMetrics, ReviewerMetrics, DomainMetricsResponse, 
     PullRequestResponse, DashboardOverview, PRStateDistribution,
-    PaginatedDevelopers, PaginatedReviewers
+    PaginatedDevelopers, PaginatedReviewers, AggregationMetrics
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -255,6 +255,33 @@ def get_reviewer_metrics(
         logger.error(f"Error getting reviewer metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/domains/list")
+def get_domains_list(db: Session = Depends(get_db)):
+    """Get list of all unique domains (recognized domains + Others)"""
+    try:
+        # Get all unique domains from database
+        db_domains = db.query(PullRequest.domain).filter(
+            PullRequest.domain.isnot(None)
+        ).distinct().all()
+        
+        # Normalize domains
+        normalized = set()
+        for (domain,) in db_domains:
+            if domain:
+                normalized.add(normalize_domain(domain))
+        
+        # Return sorted list: recognized domains alphabetically, then Others
+        result = sorted([d for d in normalized if d in settings.recognized_domains])
+        if 'Others' in normalized:
+            result.append('Others')
+        
+        logger.info(f"Returning {len(result)} domains: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Error getting domains list: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/domains", response_model=List[DomainMetricsResponse])
 def get_domain_metrics(db: Session = Depends(get_db)):
     """Get metrics for all domains."""
@@ -477,6 +504,144 @@ async def trigger_sync(
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def normalize_domain(domain: str) -> str:
+    """Normalize domain name - return recognized domain or 'Others'
+    
+    Compares domain (case-insensitive) against recognized domains list.
+    Returns the recognized domain name if found, otherwise returns 'Others'.
+    """
+    if not domain:
+        return 'Others'
+    
+    domain_lower = domain.lower().strip()
+    
+    # Check if domain matches any recognized domain (case-insensitive)
+    for recognized in settings.recognized_domains:
+        if domain_lower == recognized.lower():
+            return recognized
+    
+    return 'Others'
+
+
+def calculate_metrics_from_prs(prs: List[PullRequest]) -> dict:
+    """Calculate aggregation metrics from PR list"""
+    total_tasks = len(prs)
+    completed_tasks = sum(1 for pr in prs if pr.merged)
+    
+    # Rework % = (sum of all rework_count / total tasks) * 100
+    total_rework = sum(pr.rework_count for pr in prs)
+    rework_percentage = (total_rework / total_tasks * 100) if total_tasks > 0 else 0.0
+    
+    # Rejected = closed but not merged OR has 'rejected' label
+    rejected_count = sum(1 for pr in prs 
+                        if (pr.state == 'closed' and not pr.merged) or 
+                        any(l.lower() == 'rejected' for l in pr.labels))
+    
+    # Delivery ready = has relevant labels
+    delivery_ready_tasks = sum(1 for pr in prs 
+                               if any(l.lower() in ['ready to merge', 'delivery ready', 'expert approved'] 
+                                     for l in pr.labels))
+    
+    return {
+        'total_tasks': total_tasks,
+        'completed_tasks': completed_tasks,
+        'rework_percentage': round(rework_percentage, 2),
+        'rejected_count': rejected_count,
+        'delivery_ready_tasks': delivery_ready_tasks
+    }
+
+
+
+
+@app.get("/api/aggregation/domains", response_model=List[AggregationMetrics])
+def get_domain_aggregation(db: Session = Depends(get_db)):
+    """Domain-wise aggregation from PullRequest table with normalized domains"""
+    try:
+        # Get all PRs
+        all_prs = db.query(PullRequest).filter(PullRequest.domain.isnot(None)).all()
+        
+        # Group PRs by normalized domain
+        domain_prs = {}
+        for pr in all_prs:
+            normalized = normalize_domain(pr.domain)
+            if normalized not in domain_prs:
+                domain_prs[normalized] = []
+            domain_prs[normalized].append(pr)
+        
+        # Calculate metrics for each domain
+        results = []
+        for domain, prs in domain_prs.items():
+            metrics = calculate_metrics_from_prs(prs)
+            results.append(AggregationMetrics(name=domain, **metrics))
+        
+        # Sort: recognized domains alphabetically, then Others at the end
+        recognized_results = sorted(
+            [r for r in results if r.name in settings.recognized_domains],
+            key=lambda x: x.name
+        )
+        others_results = [r for r in results if r.name == 'Others']
+        
+        return recognized_results + others_results
+    except Exception as e:
+        logger.error(f"Error in domain aggregation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/aggregation/trainers", response_model=List[AggregationMetrics])
+def get_trainer_aggregation(domain: Optional[str] = None, db: Session = Depends(get_db)):
+    """Trainer-wise aggregation - shows all developers from PRs with their emails
+    
+    Args:
+        domain: Optional normalized domain filter (e.g., 'enterprise_wiki', 'Others')
+    """
+    try:
+        from sqlalchemy import func
+        
+        # Get all PRs
+        all_prs = db.query(PullRequest).filter(
+            PullRequest.author_login.isnot(None)
+        ).all()
+        
+        # Filter by normalized domain if provided
+        if domain:
+            filtered_prs = []
+            for pr in all_prs:
+                if normalize_domain(pr.domain) == domain:
+                    filtered_prs.append(pr)
+            all_prs = filtered_prs
+        
+        # Group PRs by author_login
+        author_prs = {}
+        for pr in all_prs:
+            if pr.author_login:
+                if pr.author_login not in author_prs:
+                    author_prs[pr.author_login] = []
+                author_prs[pr.author_login].append(pr)
+        
+        # Calculate metrics for each developer
+        results = []
+        for author_login, prs in author_prs.items():
+            metrics = calculate_metrics_from_prs(prs)
+            
+            # Get email from the first PR (they should all have the same email)
+            author_email = None
+            for pr in prs:
+                if pr.author_email:
+                    author_email = pr.author_email
+                    break
+            
+            results.append(AggregationMetrics(
+                name=author_login,
+                email=author_email,
+                **metrics
+            ))
+        
+        return sorted(results, key=lambda x: x.total_tasks, reverse=True)
+    except Exception as e:
+        logger.error(f"Error in trainer aggregation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
