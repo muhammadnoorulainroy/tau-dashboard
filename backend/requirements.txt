@@ -11,4 +11,6 @@ PyGithub==2.5.0
 websockets==14.1
 python-multipart==0.0.20
 apscheduler==3.11.0
+gspread==6.1.2
+google-auth==2.35.0
 

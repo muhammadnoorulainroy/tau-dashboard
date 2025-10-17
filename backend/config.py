@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     # Security - REQUIRED
     secret_key: str
     
+    # Google Service Account Configuration
+    google_service_account_type: str = "service_account"
+    google_project_id: str
+    google_private_key_id: str
+    google_private_key: str
+    google_client_email: str
+    google_client_id: str
+    google_auth_uri: str = "https://accounts.google.com/o/oauth2/auth"
+    google_token_uri: str = "https://oauth2.googleapis.com/token"
+    google_auth_provider_cert_url: str = "https://www.googleapis.com/oauth2/v1/certs"
+    google_client_cert_url: str
+    google_universe_domain: str = "googleapis.com"
+    
     # Recognized Domains - domains not in this list will be grouped as "Others"
     recognized_domains: List[str] = [
         'enterprise_wiki',

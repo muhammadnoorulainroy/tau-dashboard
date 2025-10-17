@@ -110,5 +110,8 @@ class AggregationMetrics(BaseModel):
     rework_percentage: float
     rejected_count: int
     delivery_ready_tasks: int
+    # Hierarchy counts (for POD Lead and Calibrator aggregations)
+    trainer_count: Optional[int] = None  # Number of trainers under this POD Lead/Calibrator
+    pod_lead_count: Optional[int] = None  # Number of POD Leads under this Calibrator
 
 

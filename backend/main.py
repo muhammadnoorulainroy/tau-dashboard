@@ -11,9 +11,11 @@ import logging
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState
+from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState, DeveloperHierarchy
 from github_service import GitHubService
+from google_sheets_service import GoogleSheetsService
 from sync_state import should_do_full_sync, get_last_sync_time, get_sync_description
+from db_migrations import run_migrations
 from schemas import (
     DeveloperMetrics, ReviewerMetrics, DomainMetricsResponse, 
     PullRequestResponse, DashboardOverview, PRStateDistribution,
@@ -56,6 +58,49 @@ async def lifespan(app: FastAPI):
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
+        # Continue anyway to allow the app to start
+    
+    # Run database migrations automatically
+    try:
+        logger.info("Running database migrations...")
+        run_migrations()
+    except Exception as e:
+        logger.error(f"Failed to run migrations: {str(e)}")
+        # Continue anyway to allow the app to start
+    
+    # Sync Google Sheets on startup
+    try:
+        logger.info("=" * 60)
+        logger.info("Syncing developer hierarchy from Google Sheets...")
+        logger.info("=" * 60)
+        
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            sheets_service = GoogleSheetsService()
+            
+            # Clear existing hierarchy data for fresh sync
+            db.query(DeveloperHierarchy).delete()
+            db.commit()
+            logger.info("Cleared existing developer hierarchy data")
+            
+            # Sync fresh data from Google Sheets
+            inserted, updated, errors = sheets_service.sync_to_database(db)
+            total_records = db.query(DeveloperHierarchy).count()
+            
+            logger.info("=" * 60)
+            logger.info(f"✅ Google Sheets sync complete:")
+            logger.info(f"   - Inserted: {inserted}")
+            logger.info(f"   - Updated: {updated}")
+            logger.info(f"   - Errors: {errors}")
+            logger.info(f"   - Total developers: {total_records}")
+            logger.info("=" * 60)
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Failed to sync Google Sheets on startup: {str(e)}")
+        logger.warning("Application will continue, but hierarchy data may be outdated")
         # Continue anyway to allow the app to start
     
     # Start background sync task
@@ -279,6 +324,25 @@ def get_domains_list(db: Session = Depends(get_db)):
         return result
     except Exception as e:
         logger.error(f"Error getting domains list: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/statuses/list")
+def get_statuses_list(db: Session = Depends(get_db)):
+    """Get list of all unique developer statuses from hierarchy table"""
+    try:
+        # Get all unique statuses from developer_hierarchy
+        statuses = db.query(DeveloperHierarchy.status).filter(
+            DeveloperHierarchy.status.isnot(None)
+        ).distinct().all()
+        
+        # Extract and sort
+        result = sorted([status for (status,) in statuses if status])
+        
+        logger.info(f"Returning {len(result)} statuses: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Error getting statuses list: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -589,19 +653,38 @@ def get_domain_aggregation(db: Session = Depends(get_db)):
 
 
 @app.get("/api/aggregation/trainers", response_model=List[AggregationMetrics])
-def get_trainer_aggregation(domain: Optional[str] = None, db: Session = Depends(get_db)):
+def get_trainer_aggregation(
+    domain: Optional[str] = None, 
+    status: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
     """Trainer-wise aggregation - shows all developers from PRs with their emails
     
     Args:
         domain: Optional normalized domain filter (e.g., 'enterprise_wiki', 'Others')
+        status: Optional developer status filter (e.g., 'Active', 'Onboarding')
     """
     try:
         from sqlalchemy import func
+        
+        # Get developers to include based on status filter
+        if status:
+            developers_query = db.query(DeveloperHierarchy.github_user).filter(
+                DeveloperHierarchy.status == status,
+                DeveloperHierarchy.github_user.isnot(None)
+            )
+            allowed_github_users = set([user.lower() for (user,) in developers_query.all()])
+        else:
+            allowed_github_users = None
         
         # Get all PRs
         all_prs = db.query(PullRequest).filter(
             PullRequest.author_login.isnot(None)
         ).all()
+        
+        # Filter by status if provided
+        if allowed_github_users is not None:
+            all_prs = [pr for pr in all_prs if pr.author_login.lower() in allowed_github_users]
         
         # Filter by normalized domain if provided
         if domain:
@@ -640,6 +723,301 @@ def get_trainer_aggregation(domain: Optional[str] = None, db: Session = Depends(
         return sorted(results, key=lambda x: x.total_tasks, reverse=True)
     except Exception as e:
         logger.error(f"Error in trainer aggregation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/google-sheets/sync")
+def sync_google_sheets(db: Session = Depends(get_db)):
+    """
+    Sync hierarchy data from Google Sheets to DeveloperHierarchy table
+    Clears existing data and performs fresh sync to ensure data is up-to-date
+    """
+    try:
+        logger.info("Manual Google Sheets sync triggered")
+        sheets_service = GoogleSheetsService()
+        
+        # Clear existing hierarchy data for fresh sync
+        db.query(DeveloperHierarchy).delete()
+        db.commit()
+        logger.info("Cleared existing developer hierarchy data")
+        
+        # Sync fresh data from Google Sheets
+        inserted, updated, errors = sheets_service.sync_to_database(db)
+        
+        # Get total count
+        total_records = db.query(DeveloperHierarchy).count()
+        
+        logger.info(f"Manual sync complete: {inserted} inserted, {updated} updated, {errors} errors, {total_records} total")
+        
+        return {
+            "status": "success",
+            "inserted": inserted,
+            "updated": updated,
+            "errors": errors,
+            "total_records": total_records,
+            "message": f"✅ Hierarchy refreshed: {total_records} developers synced from Google Sheets ({inserted} new, {errors} skipped)."
+        }
+    except FileNotFoundError as e:
+        logger.error(f"Service account file not found: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error syncing Google Sheets: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/developer-hierarchy")
+def get_developer_hierarchy(db: Session = Depends(get_db)):
+    """Get all developer hierarchy records"""
+    try:
+        records = db.query(DeveloperHierarchy).all()
+        return [
+            {
+                "id": r.id,
+                "github_user": r.github_user,
+                "turing_email": r.turing_email,
+                "role": r.role,
+                "status": r.status,
+                "pod_lead_email": r.pod_lead_email,
+                "calibrator_email": r.calibrator_email,
+                "last_synced": r.last_synced
+            }
+            for r in records
+        ]
+    except Exception as e:
+        logger.error(f"Error getting developer hierarchy: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/aggregation/pod-leads", response_model=List[AggregationMetrics])
+def get_pod_lead_aggregation(
+    domain: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    POD Lead-wise aggregation - counts ALL PRs, groups by POD Lead
+    
+    Args:
+        domain: Optional normalized domain filter (e.g., 'enterprise_wiki', 'Others')
+        status: Optional developer status filter (e.g., 'Active', 'Onboarding')
+    """
+    try:
+        from sqlalchemy import func
+        
+        # Track which PR authors have been assigned to a POD Lead
+        assigned_authors = set()
+        
+        # Get all unique pod leads from hierarchy
+        pod_leads = db.query(DeveloperHierarchy.pod_lead_email).filter(
+            DeveloperHierarchy.pod_lead_email.isnot(None)
+        ).distinct().all()
+        
+        results = []
+        for (pod_lead_email,) in pod_leads:
+            if not pod_lead_email:
+                continue
+            
+            # Build query for ALL developers under this POD lead (not just trainers)
+            devs_query = db.query(DeveloperHierarchy).filter(
+                func.lower(DeveloperHierarchy.pod_lead_email) == pod_lead_email.lower()
+            )
+            
+            # Apply status filter if provided
+            if status:
+                devs_query = devs_query.filter(DeveloperHierarchy.status == status)
+            
+            devs = devs_query.all()
+            
+            if not devs:
+                continue
+            
+            # Get PRs for these developers (case-insensitive match)
+            github_users = [d.github_user.lower() for d in devs if d.github_user]
+            
+            if not github_users:
+                continue
+            
+            # Track assigned authors
+            assigned_authors.update(github_users)
+            
+            # Query PRs with case-insensitive author_login match
+            all_prs = db.query(PullRequest).filter(
+                func.lower(PullRequest.author_login).in_(github_users)
+            ).all()
+            
+            # Apply domain filter if provided
+            if domain:
+                filtered_prs = [pr for pr in all_prs if normalize_domain(pr.domain) == domain]
+                all_prs = filtered_prs
+            
+            if all_prs:
+                metrics = calculate_metrics_from_prs(all_prs)
+                
+                # Use email prefix as display name
+                display_name = pod_lead_email.split('@')[0] if '@' in pod_lead_email else pod_lead_email
+                
+                # Count developers under this POD Lead
+                dev_count = len(devs)
+                
+                results.append(AggregationMetrics(
+                    name=display_name,
+                    email=pod_lead_email,
+                    trainer_count=dev_count,
+                    **metrics
+                ))
+        
+        # Add "Not Assigned" for PRs from developers without a POD Lead
+        # Get all PR authors
+        all_pr_authors = db.query(PullRequest.author_login).distinct().all()
+        unassigned_authors = [author.lower() for (author,) in all_pr_authors if author.lower() not in assigned_authors]
+        
+        if unassigned_authors:
+            # Query PRs for unassigned authors
+            unassigned_prs = db.query(PullRequest).filter(
+                func.lower(PullRequest.author_login).in_(unassigned_authors)
+            ).all()
+            
+            # Apply domain filter if provided
+            if domain:
+                filtered_prs = [pr for pr in unassigned_prs if normalize_domain(pr.domain) == domain]
+                unassigned_prs = filtered_prs
+            
+            if unassigned_prs:
+                metrics = calculate_metrics_from_prs(unassigned_prs)
+                
+                results.append(AggregationMetrics(
+                    name="Not Assigned",
+                    email=None,
+                    trainer_count=len(unassigned_authors),
+                    **metrics
+                ))
+        
+        return sorted(results, key=lambda x: x.total_tasks, reverse=True)
+    except Exception as e:
+        logger.error(f"Error in pod lead aggregation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/aggregation/calibrators", response_model=List[AggregationMetrics])
+def get_calibrator_aggregation(
+    domain: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Calibrator-wise aggregation - counts ALL PRs, groups by Calibrator
+    
+    Args:
+        domain: Optional normalized domain filter (e.g., 'enterprise_wiki', 'Others')
+        status: Optional developer status filter (e.g., 'Active', 'Onboarding')
+    """
+    try:
+        from sqlalchemy import func
+        
+        # Track which PR authors have been assigned to a Calibrator
+        assigned_authors = set()
+        
+        # Get all unique calibrators from hierarchy
+        calibrators = db.query(DeveloperHierarchy.calibrator_email).filter(
+            DeveloperHierarchy.calibrator_email.isnot(None)
+        ).distinct().all()
+        
+        results = []
+        for (calibrator_email,) in calibrators:
+            if not calibrator_email:
+                continue
+            
+            # Count POD Leads under this calibrator
+            pod_leads_query = db.query(DeveloperHierarchy).filter(
+                func.lower(DeveloperHierarchy.calibrator_email) == calibrator_email.lower(),
+                func.lower(DeveloperHierarchy.role) == 'pod lead'
+            )
+            if status:
+                pod_leads_query = pod_leads_query.filter(DeveloperHierarchy.status == status)
+            pod_leads_under_calibrator = pod_leads_query.all()
+            pod_lead_count = len(pod_leads_under_calibrator)
+            
+            # Build query for ALL developers under this calibrator (not just trainers)
+            devs_query = db.query(DeveloperHierarchy).filter(
+                func.lower(DeveloperHierarchy.calibrator_email) == calibrator_email.lower()
+            )
+            
+            # Apply status filter if provided
+            if status:
+                devs_query = devs_query.filter(DeveloperHierarchy.status == status)
+            
+            devs = devs_query.all()
+            
+            if not devs:
+                continue
+            
+            # Get PRs for these developers (case-insensitive match)
+            github_users = [d.github_user.lower() for d in devs if d.github_user]
+            
+            if not github_users:
+                continue
+            
+            # Track assigned authors
+            assigned_authors.update(github_users)
+            
+            # Query PRs with case-insensitive author_login match
+            all_prs = db.query(PullRequest).filter(
+                func.lower(PullRequest.author_login).in_(github_users)
+            ).all()
+            
+            # Apply domain filter if provided
+            if domain:
+                filtered_prs = [pr for pr in all_prs if normalize_domain(pr.domain) == domain]
+                all_prs = filtered_prs
+            
+            if all_prs:
+                metrics = calculate_metrics_from_prs(all_prs)
+                
+                # Use email prefix as display name
+                display_name = calibrator_email.split('@')[0] if '@' in calibrator_email else calibrator_email
+                
+                # Count developers under this Calibrator (excluding POD Leads for trainer count)
+                all_dev_count = len(devs)
+                trainer_count = all_dev_count - pod_lead_count
+                
+                results.append(AggregationMetrics(
+                    name=display_name,
+                    email=calibrator_email,
+                    trainer_count=trainer_count,
+                    pod_lead_count=pod_lead_count,
+                    **metrics
+                ))
+        
+        # Add "Not Assigned" for PRs from developers without a Calibrator
+        # Get all PR authors
+        all_pr_authors = db.query(PullRequest.author_login).distinct().all()
+        unassigned_authors = [author.lower() for (author,) in all_pr_authors if author.lower() not in assigned_authors]
+        
+        if unassigned_authors:
+            # Query PRs for unassigned authors
+            unassigned_prs = db.query(PullRequest).filter(
+                func.lower(PullRequest.author_login).in_(unassigned_authors)
+            ).all()
+            
+            # Apply domain filter if provided
+            if domain:
+                filtered_prs = [pr for pr in unassigned_prs if normalize_domain(pr.domain) == domain]
+                unassigned_prs = filtered_prs
+            
+            if unassigned_prs:
+                metrics = calculate_metrics_from_prs(unassigned_prs)
+                
+                results.append(AggregationMetrics(
+                    name="Not Assigned",
+                    email=None,
+                    trainer_count=len(unassigned_authors),
+                    pod_lead_count=0,
+                    **metrics
+                ))
+        
+        return sorted(results, key=lambda x: x.total_tasks, reverse=True)
+    except Exception as e:
+        logger.error(f"Error in calibrator aggregation: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
