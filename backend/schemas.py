@@ -58,6 +58,7 @@ class PullRequestResponse(BaseModel):
     difficulty: Optional[str]
     task_id: Optional[str]
     author_login: str
+    author_email: Optional[str]
     created_at: datetime
     updated_at: datetime
     closed_at: Optional[datetime]
@@ -98,5 +99,19 @@ class PaginatedReviewers(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AggregationMetrics(BaseModel):
+    """Metrics for aggregation views"""
+    name: str
+    email: Optional[str] = None  # Email address (for trainers)
+    total_tasks: int
+    completed_tasks: int
+    rework_percentage: float
+    rejected_count: int
+    delivery_ready_tasks: int
+    # Hierarchy counts (for POD Lead and Calibrator aggregations)
+    trainer_count: Optional[int] = None  # Number of trainers under this POD Lead/Calibrator
+    pod_lead_count: Optional[int] = None  # Number of POD Leads under this Calibrator
 
 
