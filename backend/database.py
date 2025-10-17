@@ -210,8 +210,10 @@ class PullRequest(Base):
     difficulty = Column(String, index=True)
     task_id = Column(String, index=True)
     
-    # GitHub metadata
-    author_login = Column(String, index=True)
+    # GitHub data
+    author_login = Column(String, index=True)  # Links to DeveloperHierarchy.github_user
+    author_email = Column(String, nullable=True)  # Fetched from GitHub API
+
     created_at = Column(DateTime, index=True)
     updated_at = Column(DateTime)
     closed_at = Column(DateTime)
@@ -406,9 +408,37 @@ class SyncState(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
+class DeveloperHierarchy(Base):
+    """
+    Developer Hierarchy Table - Stores POD Lead and Calibrator mapping
+    Data source: Google Sheets (merged from two sheets)
+    Links to PullRequest via github_user <-> author_login
+    """
+    __tablename__ = "developer_hierarchy"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Identity fields
+    github_user = Column(String, index=True, nullable=True)  # Links to PR.author_login (nullable for developers without GitHub)
+    turing_email = Column(String, unique=True, index=True, nullable=False)  # Primary identifier
+    
+    # Role information
+    role = Column(String, index=True)  # Trainer, POD Lead, Calibrator, etc.
+    status = Column(String, index=True)  # Active, Inactive, etc. (from Google Sheets)
+    
+    # Hierarchy fields (transformed from Google Sheets)
+    pod_lead_email = Column(String, index=True, nullable=True)
+    calibrator_email = Column(String, index=True, nullable=True)
+    
+    # Metadata
+    last_synced = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=func.now())
+    
+    __table_args__ = (
+        Index('idx_hierarchy_github_user', 'github_user'),
+        Index('idx_hierarchy_pod_lead', 'pod_lead_email'),
+        Index('idx_hierarchy_calibrator', 'calibrator_email'),
+    )
 
 def get_db():
     db = SessionLocal()
@@ -419,5 +449,9 @@ def get_db():
 
 
 def init_db():
-    """Create all tables."""
+    """
+    Create all database tables.
+    Note: This creates base tables. Additional migrations (like hierarchy columns)
+    are handled by db_migrations.py which runs automatically on startup.
+    """
     Base.metadata.create_all(bind=engine)

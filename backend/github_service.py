@@ -275,6 +275,16 @@ class GitHubService:
             db_pr.task_id = parsed['timestamp']
             
             db_pr.author_login = pr.user.login
+            
+            # Try to get author email from GitHub (might be None if private)
+            try:
+                author_email = pr.user.email
+                if author_email:
+                    db_pr.author_email = author_email
+                    logger.info(f"Fetched email for {pr.user.login}: {author_email}")
+            except Exception as e:
+                logger.debug(f"Could not fetch email for {pr.user.login}: {e}")
+            
             db_pr.created_at = pr.created_at
             db_pr.updated_at = pr.updated_at
             db_pr.closed_at = pr.closed_at

@@ -8,6 +8,7 @@ import ReviewerView from './components/ReviewerView';
 import DomainView from './components/DomainView';
 import PullRequestsView from './components/PullRequestsView';
 import InterfaceView from './components/InterfaceView';
+import AggregationView from './components/AggregationView';
 import { connectWebSocket, getDashboardOverview } from './services/api';
 
 function App() {
@@ -73,6 +74,8 @@ function App() {
         return <PullRequestsView lastUpdate={lastUpdate} />;
       case 'interfaces':
         return <InterfaceView lastUpdate={lastUpdate} />;
+      case 'aggregation':
+        return <AggregationView lastUpdate={lastUpdate} />;
       default:
         return <Dashboard lastUpdate={lastUpdate} />;
     }
