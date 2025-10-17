@@ -5,11 +5,13 @@ import {
   ClipboardDocumentCheckIcon,
   FolderIcon,
   DocumentTextIcon,
-  ChartBarIcon
+  ChartBarIcon,
+  CubeIcon
 } from '@heroicons/react/24/outline';
 
 const navigation = [
   { name: 'Dashboard', value: 'dashboard', icon: HomeIcon },
+  { name: 'Interfaces', value: 'interfaces', icon: CubeIcon },
   { name: 'Developers', value: 'developers', icon: UserGroupIcon },
   { name: 'Reviewers', value: 'reviewers', icon: ClipboardDocumentCheckIcon },
   { name: 'Domains', value: 'domains', icon: FolderIcon },
