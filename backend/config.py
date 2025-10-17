@@ -40,18 +40,18 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = "your-secret-key-here"
 
-    # Google Service Account Configuration
-    google_service_account_type: str = "service_account"
-    google_project_id: str
-    google_private_key_id: str
-    google_private_key: str
-    google_client_email: str
-    google_client_id: str
-    google_auth_uri: str = "https://accounts.google.com/o/oauth2/auth"
-    google_token_uri: str = "https://oauth2.googleapis.com/token"
-    google_auth_provider_cert_url: str = "https://www.googleapis.com/oauth2/v1/certs"
-    google_client_cert_url: str
-    google_universe_domain: str = "googleapis.com"
+    # Google Service Account Configuration (Optional - for hierarchy/aggregation features)
+    google_service_account_type: Optional[str] = "service_account"
+    google_project_id: Optional[str] = None
+    google_private_key_id: Optional[str] = None
+    google_private_key: Optional[str] = None
+    google_client_email: Optional[str] = None
+    google_client_id: Optional[str] = None
+    google_auth_uri: Optional[str] = "https://accounts.google.com/o/oauth2/auth"
+    google_token_uri: Optional[str] = "https://oauth2.googleapis.com/token"
+    google_auth_provider_cert_url: Optional[str] = "https://www.googleapis.com/oauth2/v1/certs"
+    google_client_cert_url: Optional[str] = None
+    google_universe_domain: Optional[str] = "googleapis.com"
 
     # Allowed/Recognized domains (as in both branches)
     # These domains will be shown or recognized; others may be grouped as "Others"

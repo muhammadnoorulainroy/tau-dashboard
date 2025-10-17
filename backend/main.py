@@ -363,33 +363,6 @@ def get_reviewer_metrics(
         logger.error(f"Error getting reviewer metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/domains/list")
-def get_domains_list(db: Session = Depends(get_db)):
-    """Get list of all unique domains (recognized domains + Others)"""
-    try:
-        # Get all unique domains from database
-        db_domains = db.query(PullRequest.domain).filter(
-            PullRequest.domain.isnot(None)
-        ).distinct().all()
-        
-        # Normalize domains
-        normalized = set()
-        for (domain,) in db_domains:
-            if domain:
-                normalized.add(normalize_domain(domain))
-        
-        # Return sorted list: recognized domains alphabetically, then Others
-        result = sorted([d for d in normalized if d in settings.recognized_domains])
-        if 'Others' in normalized:
-            result.append('Others')
-        
-        logger.info(f"Returning {len(result)} domains: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Error getting domains list: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/api/statuses/list")
 def get_statuses_list(db: Session = Depends(get_db)):
     """Get list of all unique developer statuses from hierarchy table"""

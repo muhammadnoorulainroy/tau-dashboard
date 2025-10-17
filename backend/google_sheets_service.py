@@ -24,6 +24,9 @@ class GoogleSheetsService:
     
     def _get_service_account_info(self) -> Dict:
         """Build service account info from environment variables"""
+        if not settings.google_private_key:
+            raise ValueError("Google Sheets credentials not configured. Set GOOGLE_* environment variables.")
+        
         # Replace literal \n in the private key with actual newlines
         private_key = settings.google_private_key.replace('\\n', '\n')
         

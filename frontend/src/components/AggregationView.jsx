@@ -47,7 +47,13 @@ const AggregationView = () => {
   const fetchDomains = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/domains/list`);
-      setDomains(response.data);
+      // Handle new format: {domains: [{id, name}]} or old format: ["domain1", ...]
+      const domainsList = response.data.domains || response.data;
+      // Extract just the names for the filter dropdown
+      const domainNames = Array.isArray(domainsList) 
+        ? domainsList.map(d => typeof d === 'string' ? d : d.name)
+        : [];
+      setDomains(domainNames);
     } catch (err) {
       console.error('Failed to fetch domains:', err);
     }
