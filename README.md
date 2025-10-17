@@ -149,8 +149,22 @@ cd frontend && ln -sf .env.production .env && cd ..
 
 ### 5. Initialize Database
 
+**Option A: Using Migration Script (Recommended)**
 ```bash
+# Run database migration to create all tables
+make db-migrate
+```
+
+**Option B: Legacy Method**
+```bash
+# Tables will be created automatically on server startup
 make db-init
+```
+
+**Testing Migration (Safe)**
+```bash
+# Test on separate database before applying to production
+make db-test
 ```
 
 ### 6. Start the Application
