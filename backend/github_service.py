@@ -130,65 +130,102 @@ class GitHubService:
     
     def get_or_create_user(self, github_username: str, role: str, db: Session) -> User:
         """Get or create a user by GitHub username."""
+        from sqlalchemy.exc import IntegrityError
+        
         user = db.query(User).filter_by(github_username=github_username).first()
         if not user:
-            user = User(
-                github_username=github_username,
-                role=role,
-                email=f"{github_username}@github.local"  # Placeholder email
-            )
-            db.add(user)
-            db.flush()
-            logger.info(f"Created new user: {github_username} (role: {role})")
+            try:
+                user = User(
+                    github_username=github_username,
+                    role=role,
+                    email=f"{github_username}@github.local"  # Placeholder email
+                )
+                db.add(user)
+                db.flush()
+                logger.info(f"Created new user: {github_username} (role: {role})")
+            except IntegrityError:
+                # User was created by another process/transaction, rollback and fetch
+                db.rollback()
+                user = db.query(User).filter_by(github_username=github_username).first()
+                if not user:
+                    # Try alternative query by email (edge case)
+                    user = db.query(User).filter_by(email=f"{github_username}@github.local").first()
         return user
     
     def get_or_create_domain(self, domain_name: str, db: Session) -> Domain:
         """Get or create a domain by name."""
+        from sqlalchemy.exc import IntegrityError
+        
         domain = db.query(Domain).filter_by(domain_name=domain_name).first()
         if not domain:
-            domain = Domain(domain_name=domain_name)
-            db.add(domain)
-            db.flush()
-            logger.info(f"Created new domain: {domain_name}")
+            try:
+                domain = Domain(domain_name=domain_name)
+                db.add(domain)
+                db.flush()
+                logger.info(f"Created new domain: {domain_name}")
+            except IntegrityError:
+                db.rollback()
+                domain = db.query(Domain).filter_by(domain_name=domain_name).first()
         return domain
     
     def get_or_create_interface(self, domain: Domain, interface_num: int, db: Session) -> Interface:
         """Get or create an interface for a domain."""
+        from sqlalchemy.exc import IntegrityError
+        
         interface = db.query(Interface).filter_by(
             domain_id=domain.id,
             interface_num=interface_num
         ).first()
         if not interface:
-            interface = Interface(
-                domain_id=domain.id,
-                interface_num=interface_num
-            )
-            db.add(interface)
-            db.flush()
-            logger.info(f"Created new interface: {domain.domain_name} - Interface {interface_num}")
+            try:
+                interface = Interface(
+                    domain_id=domain.id,
+                    interface_num=interface_num
+                )
+                db.add(interface)
+                db.flush()
+                logger.info(f"Created new interface: {domain.domain_name} - Interface {interface_num}")
+            except IntegrityError:
+                db.rollback()
+                interface = db.query(Interface).filter_by(
+                    domain_id=domain.id,
+                    interface_num=interface_num
+                ).first()
         return interface
     
     def get_or_create_week(self, week_num: int, db: Session) -> Week:
         """Get or create a week by number."""
+        from sqlalchemy.exc import IntegrityError
+        
         week = db.query(Week).filter_by(week_num=week_num).first()
         if not week:
-            week = Week(
-                week_name=f"week_{week_num}",
-                week_num=week_num
-            )
-            db.add(week)
-            db.flush()
-            logger.info(f"Created new week: week_{week_num}")
+            try:
+                week = Week(
+                    week_name=f"week_{week_num}",
+                    week_num=week_num
+                )
+                db.add(week)
+                db.flush()
+                logger.info(f"Created new week: week_{week_num}")
+            except IntegrityError:
+                db.rollback()
+                week = db.query(Week).filter_by(week_num=week_num).first()
         return week
     
     def get_or_create_pod(self, pod_name: str, db: Session) -> Pod:
         """Get or create a pod by name."""
+        from sqlalchemy.exc import IntegrityError
+        
         pod = db.query(Pod).filter_by(name=pod_name).first()
         if not pod:
-            pod = Pod(name=pod_name)
-            db.add(pod)
-            db.flush()
-            logger.info(f"Created new pod: {pod_name}")
+            try:
+                pod = Pod(name=pod_name)
+                db.add(pod)
+                db.flush()
+                logger.info(f"Created new pod: {pod_name}")
+            except IntegrityError:
+                db.rollback()
+                pod = db.query(Pod).filter_by(name=pod_name).first()
         return pod
     
     def assign_user_to_domain(self, user: User, domain: Domain, db: Session):
@@ -252,8 +289,10 @@ class GitHubService:
             
             # Check if PR already exists
             db_pr = db.query(PullRequest).filter_by(github_id=pr.id).first()
+            is_new_pr = False
             if not db_pr:
                 db_pr = PullRequest(github_id=pr.id)
+                is_new_pr = True
             
             # Update PR fields
             db_pr.number = pr.number
@@ -334,8 +373,29 @@ class GitHubService:
             db_pr.last_synced = datetime.now(timezone.utc)
             
             # Add and flush the PR first to get its ID for foreign key relationships
-            db.add(db_pr)
-            db.flush()
+            try:
+                if is_new_pr:
+                    db.add(db_pr)
+                db.flush()
+            except Exception as flush_error:
+                # Handle IntegrityError (race condition where PR was created by another process)
+                from sqlalchemy.exc import IntegrityError
+                if isinstance(flush_error, IntegrityError):
+                    db.rollback()
+                    # Re-fetch the PR that was created by another process
+                    db_pr = db.query(PullRequest).filter_by(github_id=pr.id).first()
+                    if not db_pr:
+                        logger.error(f"PR {pr.number} still not found after IntegrityError")
+                        return None
+                    # Update fields on the re-fetched PR
+                    db_pr.number = pr.number
+                    db_pr.title = pr.title
+                    db_pr.state = pr.state
+                    db_pr.merged = pr.merged
+                    db_pr.last_synced = datetime.now(timezone.utc)
+                    db.flush()
+                else:
+                    raise
             
             # Now sync reviews and check runs (they need db_pr.id to be set)
             self.sync_reviews(pr, db_pr, db)
@@ -382,29 +442,33 @@ class GitHubService:
     def sync_check_runs(self, pr, db_pr: PullRequest, db: Session):
         """Sync check runs for a pull request."""
         try:
-            if hasattr(pr, 'get_check_runs'):
-                check_failures = 0
-                for check in pr.get_check_runs():
-                    db_check = db.query(CheckRun).filter_by(github_id=check.id).first()
-                    if not db_check:
-                        db_check = CheckRun(
-                            github_id=check.id,
-                            pull_request_id=db_pr.id,
-                            name=check.name,
-                            status=check.status,
-                            conclusion=check.conclusion,
-                            started_at=check.started_at,
-                            completed_at=check.completed_at
-                        )
-                        db.add(db_check)
-                    else:
-                        db_check.status = check.status
-                        db_check.conclusion = check.conclusion
-                    
-                    if check.conclusion == 'failure':
-                        check_failures += 1
+            # Get check runs from the head commit (not from PR directly)
+            commit = self.repo.get_commit(pr.head.sha)
+            check_runs = commit.get_check_runs()
+            
+            check_failures = 0
+            for check in check_runs:
+                db_check = db.query(CheckRun).filter_by(github_id=check.id).first()
+                if not db_check:
+                    db_check = CheckRun(
+                        github_id=check.id,
+                        pull_request_id=db_pr.id,
+                        name=check.name,
+                        status=check.status,
+                        conclusion=check.conclusion,
+                        started_at=check.started_at,
+                        completed_at=check.completed_at
+                    )
+                    db.add(db_check)
+                else:
+                    db_check.status = check.status
+                    db_check.conclusion = check.conclusion
+                    db_check.completed_at = check.completed_at
                 
-                db_pr.check_failures = check_failures
+                if check.conclusion == 'failure':
+                    check_failures += 1
+            
+            db_pr.check_failures = check_failures
         except Exception as e:
             logger.error(f"Error syncing check runs for PR {pr.number}: {str(e)}")
     
