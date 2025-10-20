@@ -495,37 +495,49 @@ class GitHubService:
         # Use timezone-aware datetime for comparison with GitHub API datetimes
         since = datetime.now(timezone.utc) - timedelta(days=since_days)
         synced_count = 0
+        skipped_count = 0
         
-        logger.info(f"Starting sync for PRs since {since}")
+        logger.info(f"Starting full sync for PRs since {since} ({since_days} days)")
         
-        # Sync open PRs
-        for pr in self.repo.get_pulls(state='open'):
+        # Sync open PRs (sorted by created date descending by default)
+        logger.info("Syncing open PRs...")
+        for pr in self.repo.get_pulls(state='open', sort='created', direction='desc'):
             if pr.created_at < since:
+                # Open PRs sorted by created, so break when we hit old ones
                 break
             if self.sync_pull_request(pr, db):
                 synced_count += 1
                 if synced_count % 10 == 0:
                     db.commit()
                     logger.info(f"Synced {synced_count} PRs...")
+            else:
+                skipped_count += 1
         
-        # Sync recently closed PRs
-        for pr in self.repo.get_pulls(state='closed'):
+        # Sync recently closed/merged PRs (sorted by updated date to catch recent activity)
+        logger.info("Syncing closed/merged PRs...")
+        for pr in self.repo.get_pulls(state='closed', sort='updated', direction='desc'):
+            # Check updated_at since we want recently active closed PRs
             if pr.updated_at < since:
+                # PRs sorted by updated_at desc, so break when we hit old ones
                 break
             if self.sync_pull_request(pr, db):
                 synced_count += 1
                 if synced_count % 10 == 0:
                     db.commit()
                     logger.info(f"Synced {synced_count} PRs...")
+            else:
+                skipped_count += 1
         
         db.commit()
-        logger.info(f"Sync completed. Total PRs synced: {synced_count}")
+        logger.info(f"Full sync completed: synced {synced_count} PRs, skipped {skipped_count}")
         
         # Update aggregated metrics
+        logger.info("Updating aggregated metrics...")
         self.update_developer_metrics(db)
         self.update_reviewer_metrics(db)
         self.update_domain_metrics(db)
         self.update_interface_metrics(db)
+        logger.info("Metrics updated successfully")
         
         # Update last sync time
         update_last_sync_time(db)
@@ -902,32 +914,64 @@ class GitHubService:
     def get_incremental_updates(self, db: Session, last_sync: datetime) -> int:
         """Get incremental updates since last sync."""
         synced_count = 0
+        skipped_count = 0
+        checked_count = 0
         
         # Ensure last_sync is timezone-aware
         if last_sync.tzinfo is None:
             last_sync = last_sync.replace(tzinfo=timezone.utc)
         
-        # Get recently updated PRs
-        for pr in self.repo.get_pulls(state='all'):
-            if pr.updated_at <= last_sync:
-                break
-            if self.sync_pull_request(pr, db):
-                synced_count += 1
-                if synced_count % 10 == 0:
-                    db.commit()
+        logger.info(f"Starting incremental sync for PRs updated after {last_sync}")
+        
+        # Get recently updated PRs - explicitly sort by updated date descending
+        # GitHub API: sort='updated' returns PRs sorted by most recently updated first
+        try:
+            for pr in self.repo.get_pulls(state='all', sort='updated', direction='desc'):
+                checked_count += 1
+                
+                # Check if PR was updated after last sync
+                if pr.updated_at <= last_sync:
+                    # Since PRs are sorted by updated_at desc, once we hit an old PR,
+                    # all remaining PRs will be even older, so we can break
+                    logger.info(f"Reached PRs older than last sync at PR #{pr.number} (updated: {pr.updated_at})")
+                    break
+                
+                # Try to sync this PR
+                if self.sync_pull_request(pr, db):
+                    synced_count += 1
+                    if synced_count % 10 == 0:
+                        db.commit()
+                        logger.info(f"Incremental sync progress: synced {synced_count} PRs (checked {checked_count})...")
+                else:
+                    skipped_count += 1
+                
+                # Safety limit to prevent runaway syncs
+                if checked_count > 500:
+                    logger.warning(f"Checked 500 PRs, stopping incremental sync. Consider a full sync.")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error during incremental sync: {str(e)}")
+            db.rollback()
+            raise
         
         db.commit()
         
+        logger.info(f"Incremental sync complete: synced {synced_count} PRs, skipped {skipped_count}, checked {checked_count} total")
+        
         # Update metrics if we synced any PRs
         if synced_count > 0:
+            logger.info("Updating aggregated metrics...")
             self.update_developer_metrics(db)
             self.update_reviewer_metrics(db)
             self.update_domain_metrics(db)
             self.update_interface_metrics(db)
+            logger.info("Metrics updated successfully")
         
         # ALWAYS update last sync time, even if no updates found
         # This prevents repeatedly checking the same time period
         update_last_sync_time(db)
+        logger.info("Sync state updated")
         
         return synced_count
     
