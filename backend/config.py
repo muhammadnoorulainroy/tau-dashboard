@@ -1,6 +1,9 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field, validator
 from typing import Optional, List
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     """
@@ -53,7 +56,7 @@ class Settings(BaseSettings):
     google_client_cert_url: Optional[str] = None
     google_universe_domain: Optional[str] = "googleapis.com"
 
-    # Allowed/Recognized domains (as in both branches)
+    # Allowed/Recognized domains (fallback list - will be dynamically updated from GitHub)
     # These domains will be shown or recognized; others may be grouped as "Others"
     allowed_domains: List[str] = [
         "enterprise_wiki",
@@ -62,11 +65,16 @@ class Settings(BaseSettings):
         "hr_experts",
         "hr_management",
         "hr_payroll",
+        "hr_talent_management",
         "incident_management",
         "it_incident_management",
         "smart_home"
     ]
     recognized_domains: List[str] = allowed_domains
+    
+    # Dynamic domain discovery settings
+    enable_dynamic_domains: bool = True  # Set to False to use hardcoded list only
+    last_domain_refresh: Optional[float] = None  # Timestamp of last refresh
 
     @validator('database_url', always=True, pre=False)
     def construct_database_url(cls, v, values):
@@ -93,3 +101,76 @@ class Settings(BaseSettings):
         extra = 'allow'
 
 settings = Settings()
+
+
+def fetch_domains_from_github() -> List[str]:
+    """
+    Fetch valid domain names from GitHub repo's envs folder.
+    Returns list of domain names (folder names in envs/).
+    """
+    try:
+        from github import Github
+        
+        logger.info("Fetching domains from GitHub repo envs folder...")
+        
+        # Initialize GitHub client
+        g = Github(settings.github_token)
+        repo = g.get_repo(settings.github_repo)
+        
+        # Get contents of envs folder
+        contents = repo.get_contents("envs")
+        
+        # Filter for directories only
+        domains = [
+            item.name for item in contents 
+            if item.type == "dir"
+        ]
+        
+        # Normalize domain names (replace hyphens with underscores)
+        normalized_domains = [domain.replace('-', '_') for domain in domains]
+        
+        logger.info(f"Discovered {len(normalized_domains)} domains from GitHub: {', '.join(normalized_domains)}")
+        
+        return normalized_domains
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch domains from GitHub: {str(e)}")
+        logger.info("Using fallback hardcoded domain list")
+        return settings.allowed_domains
+
+
+def update_allowed_domains(force: bool = False) -> bool:
+    """
+    Update the allowed_domains list from GitHub.
+    
+    Args:
+        force: If True, update even if dynamic domains are disabled
+        
+    Returns:
+        True if update was successful, False otherwise
+    """
+    import time
+    
+    if not settings.enable_dynamic_domains and not force:
+        logger.debug("Dynamic domain discovery is disabled")
+        return False
+    
+    try:
+        # Fetch domains from GitHub
+        new_domains = fetch_domains_from_github()
+        
+        if new_domains:
+            # Update the settings
+            settings.allowed_domains = new_domains
+            settings.recognized_domains = new_domains
+            settings.last_domain_refresh = time.time()
+            
+            logger.info(f"Updated allowed domains: {len(new_domains)} domains")
+            return True
+        else:
+            logger.warning("No domains fetched from GitHub, keeping existing list")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error updating domains: {str(e)}")
+        return False

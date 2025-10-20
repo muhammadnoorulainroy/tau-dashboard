@@ -106,12 +106,35 @@ async def lifespan(app: FastAPI):
         logger.warning("Application will continue, but hierarchy data may be outdated")
         # Continue anyway to allow the app to start
     
+    # Update allowed domains from GitHub on startup
+    try:
+        logger.info("=" * 60)
+        logger.info("Updating allowed domains from GitHub repo...")
+        logger.info("=" * 60)
+        
+        from config import update_allowed_domains, settings
+        success = update_allowed_domains(force=True)
+        
+        if success:
+            logger.info(f"✅ Domains updated: {len(settings.allowed_domains)} domains discovered")
+            logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
+        else:
+            logger.warning(f"⚠️  Using fallback domain list: {len(settings.allowed_domains)} domains")
+        
+        logger.info("=" * 60)
+    except Exception as e:
+        logger.error(f"Failed to update domains from GitHub: {str(e)}")
+        logger.warning("Application will continue with fallback domain list")
+        # Continue anyway to allow the app to start
+    
     # Start background sync task
     background_task = None
+    domain_refresh_task = None
     try:
-        from background_tasks import start_background_sync
+        from background_tasks import start_background_sync, start_domain_refresh
         background_task = asyncio.create_task(start_background_sync(manager))
-        logger.info("Background sync task started")
+        domain_refresh_task = asyncio.create_task(start_domain_refresh())
+        logger.info("Background sync and domain refresh tasks started")
     except ImportError as e:
         logger.warning(f"Background sync module not available: {str(e)}")
     except Exception as e:
@@ -141,6 +164,15 @@ async def lifespan(app: FastAPI):
             await background_task
         except asyncio.CancelledError:
             logger.info("Background periodic sync task cancelled")
+    
+    # Cancel domain refresh task
+    if domain_refresh_task:
+        logger.info("Cancelling domain refresh task...")
+        domain_refresh_task.cancel()
+        try:
+            await domain_refresh_task
+        except asyncio.CancelledError:
+            logger.info("Domain refresh task cancelled")
     
     # Cancel all active manual sync tasks
     if active_sync_tasks:
@@ -421,6 +453,51 @@ def get_domains_list(db: Session = Depends(get_db)):
         }
     except Exception as e:
         logger.error(f"Error getting domains list: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/domains/config/current")
+def get_current_domains_config():
+    """Get current allowed domains configuration."""
+    from config import settings
+    import time
+    
+    last_refresh_time = None
+    if settings.last_domain_refresh:
+        last_refresh_time = datetime.fromtimestamp(settings.last_domain_refresh, tz=timezone.utc).isoformat()
+    
+    return {
+        'allowed_domains': sorted(settings.allowed_domains),
+        'count': len(settings.allowed_domains),
+        'dynamic_discovery_enabled': settings.enable_dynamic_domains,
+        'last_refresh': last_refresh_time,
+        'source': 'github_dynamic' if settings.enable_dynamic_domains else 'hardcoded_fallback'
+    }
+
+@app.post("/api/domains/config/refresh")
+def refresh_domains_config():
+    """Manually trigger domain refresh from GitHub."""
+    from config import update_allowed_domains, settings
+    
+    try:
+        logger.info("Manual domain refresh triggered via API")
+        success = update_allowed_domains(force=True)
+        
+        if success:
+            return {
+                'status': 'success',
+                'message': 'Domains refreshed successfully',
+                'allowed_domains': sorted(settings.allowed_domains),
+                'count': len(settings.allowed_domains)
+            }
+        else:
+            return {
+                'status': 'error',
+                'message': 'Failed to refresh domains from GitHub',
+                'allowed_domains': sorted(settings.allowed_domains),
+                'count': len(settings.allowed_domains)
+            }
+    except Exception as e:
+        logger.error(f"Error refreshing domains via API: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/domains/{domain}", response_model=DomainMetricsResponse)

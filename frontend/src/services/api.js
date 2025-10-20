@@ -44,6 +44,13 @@ export const getTimelineStats = (days = 30, domain = null) =>
 export const triggerSync = (sinceDays = 60) => 
   api.post('/sync', { since_days: sinceDays });
 
+// Domain Configuration
+export const refreshDomains = () => 
+  api.post('/domains/config/refresh');
+
+export const getCurrentDomains = () => 
+  api.get('/domains/config/current');
+
 // WebSocket connection for real-time updates
 export const connectWebSocket = (onMessage) => {
   const ws = new WebSocket(WS_URL);
