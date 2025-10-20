@@ -1,10 +1,11 @@
 """
 Database Migration Script
-Creates all tables from SQLAlchemy models with proper schema structure.
+Creates database (if needed) and all tables from SQLAlchemy models.
 """
 import sys
 import argparse
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import OperationalError
 from database import Base
 from config import settings
 
@@ -13,7 +14,69 @@ def get_table_count(engine):
     inspector = inspect(engine)
     return len(inspector.get_table_names())
 
-def migrate_database(database_url=None, force=False, verbose=True):
+def parse_database_url(url):
+    """Parse database URL into components."""
+    # Example: postgresql://user:pass@host:port/dbname
+    parts = url.rsplit('/', 1)
+    base_url = parts[0]  # postgresql://user:pass@host:port
+    db_name = parts[1] if len(parts) > 1 else 'tau_dashboard'
+    return base_url, db_name
+
+def database_exists(database_url):
+    """Check if database exists."""
+    try:
+        engine = create_engine(database_url)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        engine.dispose()
+        return True
+    except OperationalError:
+        return False
+    except Exception as e:
+        print(f"Warning: Could not check database existence: {str(e)}")
+        return False
+
+def create_database(database_url, db_name, verbose=True):
+    """Create the database if it doesn't exist."""
+    base_url, _ = parse_database_url(database_url)
+    
+    # Connect to default 'postgres' database to create new database
+    postgres_url = f"{base_url}/postgres"
+    
+    try:
+        if verbose:
+            print(f"Creating database '{db_name}'...")
+        
+        # Create engine with isolation_level for CREATE DATABASE
+        engine = create_engine(postgres_url, isolation_level="AUTOCOMMIT")
+        
+        with engine.connect() as conn:
+            # Check if database already exists
+            result = conn.execute(
+                text(f"SELECT 1 FROM pg_database WHERE datname = :dbname"),
+                {"dbname": db_name}
+            )
+            exists = result.fetchone() is not None
+            
+            if exists:
+                if verbose:
+                    print(f"Database '{db_name}' already exists.")
+                return True
+            
+            # Create database
+            conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+            
+            if verbose:
+                print(f"Database '{db_name}' created successfully!")
+            return True
+            
+    except Exception as e:
+        print(f"ERROR: Could not create database: {str(e)}")
+        return False
+    finally:
+        engine.dispose()
+
+def migrate_database(database_url=None, force=False, verbose=True, create_db=False):
     """
     Create all tables from models.
     
@@ -21,9 +84,11 @@ def migrate_database(database_url=None, force=False, verbose=True):
         database_url: Database URL (defaults to settings.database_url)
         force: Skip confirmation prompt
         verbose: Print detailed information
+        create_db: Create database if it doesn't exist
     """
     # Use provided URL or fall back to settings
     url = database_url or settings.database_url
+    base_url, db_name = parse_database_url(url)
     
     if verbose:
         print("=" * 80)
@@ -39,6 +104,37 @@ def migrate_database(database_url=None, force=False, verbose=True):
                 display_url = url.replace(user_pass, f"{user}:****")
         print(f"Target Database: {display_url}")
         print("=" * 80)
+        print()
+    
+    # Check if database exists
+    db_exists = database_exists(url)
+    
+    if not db_exists:
+        if verbose:
+            print(f"Database '{db_name}' does not exist.")
+            print()
+        
+        if create_db:
+            # Attempt to create database
+            if not create_database(url, db_name, verbose):
+                return False
+            print()
+        else:
+            # Ask user if they want to create it
+            if not force:
+                response = input(f"Create database '{db_name}'? [y/N]: ")
+                if response.lower() not in ['y', 'yes']:
+                    print("Migration cancelled. Please create the database manually:")
+                    print(f"  psql -U postgres")
+                    print(f"  CREATE DATABASE {db_name};")
+                    print(f"  \\q")
+                    return False
+                print()
+            
+            # Create database
+            if not create_database(url, db_name, verbose):
+                return False
+            print()
     
     # Create engine
     try:
@@ -115,7 +211,7 @@ def migrate_database(database_url=None, force=False, verbose=True):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Database migration script - creates all tables from models'
+        description='Database migration script - creates database (if needed) and all tables from models'
     )
     parser.add_argument(
         '--database-url',
@@ -137,6 +233,11 @@ def main():
         action='store_true',
         help='Use test database (tau_dashboard_test)'
     )
+    parser.add_argument(
+        '--create-db',
+        action='store_true',
+        help='Automatically create database if it does not exist (no prompt)'
+    )
     
     args = parser.parse_args()
     
@@ -155,7 +256,8 @@ def main():
     success = migrate_database(
         database_url=database_url,
         force=args.force,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        create_db=args.create_db or args.force  # Auto-create if --create-db or --force
     )
     
     sys.exit(0 if success else 1)

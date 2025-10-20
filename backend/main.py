@@ -189,13 +189,18 @@ def read_root():
 def get_dashboard_overview(db: Session = Depends(get_db)):
     """Get overall dashboard metrics."""
     try:
+        from config import settings
+        
         total_prs = db.query(PullRequest).count()
         open_prs = db.query(PullRequest).filter_by(state='open').count()
         merged_prs = db.query(PullRequest).filter_by(merged=True).count()
         
         total_developers = db.query(Developer).count()
         total_reviewers = db.query(Reviewer).count()
-        total_domains = db.query(DomainMetrics).count()
+        # Only count allowed domains from config
+        total_domains = db.query(DomainMetrics).filter(
+            DomainMetrics.domain.in_(settings.allowed_domains)
+        ).count()
         
         # Calculate average rework
         avg_rework = db.query(PullRequest).with_entities(

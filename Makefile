@@ -1,4 +1,4 @@
-.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-migrate db-test db-reset db-status generate-secret
+.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone generate-secret
 
 # Default target
 help:
@@ -15,6 +15,7 @@ help:
 	@echo "  make start          - Start both (in separate terminals)"
 	@echo ""
 	@echo "Database Management:"
+	@echo "  make db-setup       - Setup database (create DB + tables, one command)"
 	@echo "  make db-migrate     - Run database migration (create tables)"
 	@echo "  make db-test        - Test migration on test database"
 	@echo "  make db-status      - Show database status"
@@ -86,6 +87,11 @@ test:
 sync:
 	@echo "🔄 Triggering GitHub sync..."
 	curl -X POST http://localhost:8000/api/sync
+
+# Setup database (create database + tables in one command)
+db-setup:
+	@echo "🗄️  Setting up database (will create if needed)..."
+	cd backend && python migrate_db.py --create-db
 
 # Run database migration (create tables)
 db-migrate:

@@ -393,8 +393,8 @@ class SyncState(Base):
     __tablename__ = "sync_state"
     
     id = Column(Integer, primary_key=True, index=True)
-    last_sync_time = Column(DateTime)
-    last_full_sync_time = Column(DateTime)
+    last_sync_time = Column(DateTime(timezone=True))  # Store with timezone
+    last_full_sync_time = Column(DateTime(timezone=True))  # Store with timezone
     total_prs_synced = Column(Integer, default=0)
     total_users_created = Column(Integer, default=0)
     total_domains_created = Column(Integer, default=0)

@@ -42,7 +42,13 @@ This will install both backend and frontend dependencies.
 
 ### 3. Set Up PostgreSQL Database
 
-Create the database:
+**Option A: Automatic (Recommended for new setup)**
+
+The migration script can create the database for you automatically. Skip to Step 5 and use `make db-setup`.
+
+**Option B: Manual**
+
+Create the database manually:
 
 ```bash
 createdb tau_dashboard
@@ -149,13 +155,24 @@ cd frontend && ln -sf .env.production .env && cd ..
 
 ### 5. Initialize Database
 
-**Option A: Using Migration Script (Recommended)**
+**Option A: Automatic Setup (Recommended for new installations)**
 ```bash
-# Run database migration to create all tables
+# Creates database (if needed) + all tables in one command
+make db-setup
+```
+
+This will:
+- Check if the database exists
+- Create it if it doesn't exist (prompts for confirmation)
+- Create all tables from the schema
+
+**Option B: Manual Setup (if database already exists)**
+```bash
+# Run database migration to create tables only
 make db-migrate
 ```
 
-**Option B: Legacy Method**
+**Option C: Legacy Method**
 ```bash
 # Tables will be created automatically on server startup
 make db-init
@@ -256,7 +273,11 @@ make start-backend  # Start backend server
 make start-frontend # Start frontend dev server
 make test           # Run tests
 make sync           # Trigger GitHub sync
-make db-init        # Initialize database
+make db-setup       # Setup database (create DB + tables)
+make db-migrate     # Run database migration
+make db-test        # Test migration on test database
+make db-status      # Show database status
+make db-init        # Initialize database (legacy)
 make db-reset       # Reset database
 make clean          # Clean up generated files
 ```
@@ -276,7 +297,31 @@ Full API documentation: http://localhost:8000/docs
 
 ## Database Management
 
-### Initialize Database
+### Setup Database (First Time)
+```bash
+# Creates database (if needed) and all tables
+make db-setup
+```
+
+### Run Migration (Existing Database)
+```bash
+# Creates tables only (database must exist)
+make db-migrate
+```
+
+### Test Migration (Safe)
+```bash
+# Test on separate test database
+make db-test
+```
+
+### Check Database Status
+```bash
+# Show tables and row counts
+make db-status
+```
+
+### Initialize Database (Legacy)
 ```bash
 make db-init
 ```
