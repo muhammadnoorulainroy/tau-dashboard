@@ -109,21 +109,15 @@ async def lifespan(app: FastAPI):
     # Update allowed domains from GitHub on startup
     try:
         logger.info("=" * 60)
-        logger.info("Updating allowed domains from GitHub repo...")
+        logger.info("Loading domain configuration...")
         logger.info("=" * 60)
         
-        from config import update_allowed_domains, settings
-        success = update_allowed_domains(force=True)
-        
-        if success:
-            logger.info(f"✅ Domains updated: {len(settings.allowed_domains)} domains discovered")
-            logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
-        else:
-            logger.warning(f"⚠️  Using fallback domain list: {len(settings.allowed_domains)} domains")
-        
+        from config import settings
+        logger.info(f"✅ Domains loaded: {len(settings.allowed_domains)} domains")
+        logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
         logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"Failed to update domains from GitHub: {str(e)}")
+        logger.error(f"Failed to load domains: {str(e)}")
         logger.warning("Application will continue with fallback domain list")
         # Continue anyway to allow the app to start
     
@@ -206,7 +200,7 @@ from config import settings
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:5173"],  # Allow configured frontend URL
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -476,26 +470,18 @@ def get_current_domains_config():
 @app.post("/api/domains/config/refresh")
 def refresh_domains_config():
     """Manually trigger domain refresh from GitHub."""
-    from config import update_allowed_domains, settings
+    from config import settings
     
     try:
         logger.info("Manual domain refresh triggered via API")
-        success = update_allowed_domains(force=True)
         
-        if success:
-            return {
-                'status': 'success',
-                'message': 'Domains refreshed successfully',
-                'allowed_domains': sorted(settings.allowed_domains),
-                'count': len(settings.allowed_domains)
-            }
-        else:
-            return {
-                'status': 'error',
-                'message': 'Failed to refresh domains from GitHub',
-                'allowed_domains': sorted(settings.allowed_domains),
-                'count': len(settings.allowed_domains)
-            }
+        # Return current domain configuration
+        return {
+            'status': 'success',
+            'message': 'Domain configuration retrieved',
+            'allowed_domains': sorted(settings.allowed_domains),
+            'count': len(settings.allowed_domains)
+        }
     except Exception as e:
         logger.error(f"Error refreshing domains via API: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
