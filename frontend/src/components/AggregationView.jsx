@@ -6,7 +6,10 @@ import {
   ShieldCheckIcon,
   ArrowPathIcon,
   ChevronLeftIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
+  XMarkIcon,
+  CheckCircleIcon,
+  ExclamationCircleIcon
 } from '@heroicons/react/24/outline';
 import axios from 'axios';
 import { API_BASE_URL } from '../services/api.config';
@@ -21,6 +24,7 @@ const AggregationView = () => {
   const [statuses, setStatuses] = useState([]);
   const [selectedStatus, setSelectedStatus] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [notification, setNotification] = useState(null);
   const [pagination, setPagination] = useState({
     page: 1,
     rowsPerPage: 20
@@ -115,15 +119,25 @@ const AggregationView = () => {
     setSyncing(true);
     try {
       const response = await axios.post(`${API_BASE_URL}/google-sheets/sync`);
-      alert(`✅ ${response.data.message}`);
+      setNotification({
+        type: 'success',
+        message: response.data.message
+      });
       await fetchData();
     } catch (err) {
       const errorMsg = err.response?.data?.detail || 'Failed to sync Google Sheets. Check console.';
-      alert(`❌ ${errorMsg}`);
+      setNotification({
+        type: 'error',
+        message: errorMsg
+      });
       console.error('Sync error:', err);
     } finally {
       setSyncing(false);
     }
+  };
+
+  const closeNotification = () => {
+    setNotification(null);
   };
 
   const currentTab = tabs.find(t => t.id === activeTab);
@@ -138,6 +152,49 @@ const AggregationView = () => {
 
   return (
     <div className="space-y-6">
+      {/* Notification Modal */}
+      {notification && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <div className="flex items-start">
+              <div className="flex-shrink-0">
+                {notification.type === 'success' ? (
+                  <CheckCircleIcon className="h-12 w-12 text-green-500" />
+                ) : (
+                  <ExclamationCircleIcon className="h-12 w-12 text-red-500" />
+                )}
+              </div>
+              <div className="ml-4 flex-1">
+                <h3 className={`text-lg font-medium ${notification.type === 'success' ? 'text-green-800' : 'text-red-800'}`}>
+                  {notification.type === 'success' ? 'Success' : 'Error'}
+                </h3>
+                <p className="mt-2 text-gray-600">
+                  {notification.message}
+                </p>
+              </div>
+              <button
+                onClick={closeNotification}
+                className="ml-4 flex-shrink-0 text-gray-400 hover:text-gray-600"
+              >
+                <XMarkIcon className="h-6 w-6" />
+              </button>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={closeNotification}
+                className={`px-4 py-2 rounded-lg font-medium ${
+                  notification.type === 'success'
+                    ? 'bg-green-500 hover:bg-green-600 text-white'
+                    : 'bg-red-500 hover:bg-red-600 text-white'
+                }`}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
