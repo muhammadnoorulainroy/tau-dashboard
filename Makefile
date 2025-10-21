@@ -38,7 +38,7 @@ setup: install
 	@echo "3. Configure environment:"
 	@echo "   - Backend:  Edit backend/.env.dev and add your GITHUB_TOKEN"
 	@echo "   - Frontend: Edit frontend/.env.dev if you need custom ports"
-	@echo "   - Default: Backend on port 8000, Frontend on port 3000"
+	@echo "   - Default: Backend on port 4000, Frontend on port 1000"
 	@echo "4. Run 'make start-backend' in one terminal"
 	@echo "5. Run 'make start-frontend' in another terminal"
 
@@ -61,8 +61,8 @@ start-backend:
 	@echo "🚀 Starting backend server..."
 	@echo "Creating backend .env symlink if needed..."
 	@cd backend && [ -f .env ] || ln -s .env.dev .env
-	@echo "Starting backend (check backend/.env.dev for port configuration)..."
-	cd backend && uvicorn main:app --reload
+	@echo "Starting backend on port 4000..."
+	cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 4000
 
 # Start frontend dev server
 start-frontend:
