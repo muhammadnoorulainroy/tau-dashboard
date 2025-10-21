@@ -74,26 +74,31 @@ async def start_domain_refresh():
     """Background task to periodically refresh allowed domains from GitHub."""
     try:
         # Wait a bit before starting to ensure the app is fully initialized
-        await asyncio.sleep(120)  # Wait 2 minutes before first refresh
+        await asyncio.sleep(3600)  # Wait 1 hour before first refresh
         
         while True:
             try:
-                logger.info("🔄 Domain refresh check...")
+                logger.info("🔄 Refreshing allowed domains from GitHub...")
                 
-                from config import settings
+                from config import update_allowed_domains, settings
                 
-                # Log current domain configuration
-                logger.info(f"Current domains: {len(settings.allowed_domains)} domains configured")
-                logger.debug(f"   Domains: {', '.join(settings.allowed_domains)}")
+                # Update domains from GitHub
+                success = update_allowed_domains(force=True)
+                
+                if success:
+                    logger.info(f"✅ Domains refreshed: {len(settings.allowed_domains)} domains")
+                    logger.debug(f"   Domains: {', '.join(settings.allowed_domains)}")
+                else:
+                    logger.warning(f"⚠️  Domain refresh failed, using cached list: {len(settings.allowed_domains)} domains")
                 
             except asyncio.CancelledError:
                 # Task was cancelled, exit gracefully
                 logger.info("Domain refresh task cancelled, shutting down...")
                 raise
             except Exception as e:
-                logger.error(f"Error in domain check: {str(e)}")
+                logger.error(f"Error refreshing domains: {str(e)}")
             
-            # Wait for 1 hour between checks
+            # Wait for 1 hour between refreshes
             await asyncio.sleep(3600)
     
     except asyncio.CancelledError:

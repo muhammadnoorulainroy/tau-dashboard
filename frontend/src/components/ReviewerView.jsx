@@ -39,6 +39,9 @@ const ReviewerView = ({ lastUpdate }) => {
   }, [searchTerm]);
 
   useEffect(() => {
+    // Clear current data immediately when filters change to prevent showing stale data
+    setReviewers([]);
+    setTotal(0);
     fetchReviewers();
   }, [lastUpdate, sortBy, debouncedSearchTerm, selectedDomain]);
 
@@ -260,14 +263,17 @@ const ReviewerView = ({ lastUpdate }) => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex flex-wrap gap-1">
-                        {reviewer.metrics?.domains && Object.keys(reviewer.metrics.domains).slice(0, 3).map(domain => (
+                        {reviewer.metrics?.domains && Array.isArray(reviewer.metrics.domains) && reviewer.metrics.domains.slice(0, 3).map(domain => (
                           <span key={domain} className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
-                            {domain} ({reviewer.metrics.domains[domain]})
+                            {domain}
                           </span>
                         ))}
-                        {reviewer.metrics?.domains && Object.keys(reviewer.metrics.domains).length > 3 && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
-                            +{Object.keys(reviewer.metrics.domains).length - 3}
+                        {reviewer.metrics?.domains && Array.isArray(reviewer.metrics.domains) && reviewer.metrics.domains.length > 3 && (
+                          <span 
+                            className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 cursor-help"
+                            title={reviewer.metrics.domains.slice(3).join(', ')}
+                          >
+                            +{reviewer.metrics.domains.length - 3}
                           </span>
                         )}
                       </div>

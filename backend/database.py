@@ -52,6 +52,7 @@ class Domain(Base):
     display_name = Column(String)
     description = Column(Text)
     is_active = Column(Boolean, default=True, index=True)
+    github_created_at = Column(DateTime(timezone=True), nullable=True)  # When domain was created on GitHub
     
     # Statistics
     total_tasks = Column(Integer, default=0)
