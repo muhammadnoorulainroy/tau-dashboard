@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # Server Configuration
     backend_host: str = "0.0.0.0"
     backend_port: int = 4000
-    frontend_url: str = "http://104.198.177.87:1000"
+    frontend_url: str = "http://localhost:1000"
     
     # Database Configuration - Can be provided as single URL or individual components
     database_url: Optional[str] = None

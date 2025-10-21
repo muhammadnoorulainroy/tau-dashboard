@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { API_BASE_URL } from '../services/api.config';
 import {
   CubeIcon,
   ChartBarIcon,
@@ -44,9 +45,9 @@ const InterfaceView = ({ lastUpdate }) => {
     try {
       // Fetch weeks, domains, and trainers
       const [weeksRes, domainsRes, trainersRes] = await Promise.all([
-        axios.get('http://localhost:8000/api/weeks'),
-        axios.get('http://localhost:8000/api/domains/list'),
-        axios.get('http://localhost:8000/api/trainers')
+        axios.get(`${API_BASE_URL}/weeks`),
+        axios.get(`${API_BASE_URL}/domains/list`),
+        axios.get(`${API_BASE_URL}/trainers`)
       ]);
       
       const weeksList = weeksRes.data.weeks || [];
@@ -89,8 +90,8 @@ const InterfaceView = ({ lastUpdate }) => {
       
       // Fetch both interface data and status breakdown
       const [interfacesRes, statusRes] = await Promise.all([
-        axios.get('http://localhost:8000/api/interfaces/filtered', { params }),
-        axios.get('http://localhost:8000/api/pr-status-breakdown', { params: { week_id: activeFilters.week_id, domain_id: activeFilters.domain_id } })
+        axios.get(`${API_BASE_URL}/interfaces/filtered`, { params }),
+        axios.get(`${API_BASE_URL}/pr-status-breakdown`, { params: { week_id: activeFilters.week_id, domain_id: activeFilters.domain_id } })
       ]);
       
       setInterfaces(interfacesRes.data.interfaces);

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { API_BASE_URL } from '../services/api.config';
 import { 
   UserIcon, 
   DocumentTextIcon, 
@@ -44,7 +45,7 @@ const DeveloperView = ({ lastUpdate }) => {
 
   const fetchDomains = async () => {
     try {
-      const response = await axios.get('http://localhost:8000/api/domains/list');
+      const response = await axios.get(`${API_BASE_URL}/domains/list`);
       setDomains(response.data.domains || []);
     } catch (error) {
       console.error('Error fetching domains:', error);
@@ -64,7 +65,7 @@ const DeveloperView = ({ lastUpdate }) => {
       if (debouncedSearchTerm) params.search = debouncedSearchTerm;
       if (selectedDomain) params.domain = selectedDomain;
       
-      const response = await axios.get('http://localhost:8000/api/developers', { params });
+      const response = await axios.get(`${API_BASE_URL}/developers`, { params });
       setDevelopers(response.data.data);
       setTotal(response.data.total);
     } catch (error) {
