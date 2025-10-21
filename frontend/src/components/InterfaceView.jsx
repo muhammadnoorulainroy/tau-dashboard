@@ -280,7 +280,6 @@ const InterfaceView = ({ lastUpdate }) => {
                   <thead>
                     <tr className="text-left text-xs font-medium text-gray-500 border-b-2">
                       <th className="pb-3 px-4">Interface</th>
-                      <th className="pb-3 px-4 text-center" colSpan="2">Count</th>
                       <th className="pb-3 px-4 text-center bg-red-50" colSpan="2">Expert</th>
                       <th className="pb-3 px-4 text-center bg-orange-50" colSpan="2">Hard</th>
                       <th className="pb-3 px-4 text-center bg-yellow-50" colSpan="2">Medium</th>
@@ -288,8 +287,6 @@ const InterfaceView = ({ lastUpdate }) => {
                     </tr>
                     <tr className="text-xs font-medium text-gray-500 border-b">
                       <th className="pb-2"></th>
-                      <th className="pb-2 text-center">Count</th>
-                      <th className="pb-2 text-center">Percent</th>
                       <th className="pb-2 text-center bg-red-50">Count</th>
                       <th className="pb-2 text-center bg-red-50">Percent</th>
                       <th className="pb-2 text-center bg-orange-50">Count</th>
@@ -311,8 +308,6 @@ const InterfaceView = ({ lastUpdate }) => {
                       return (
                         <tr key={interface_data.interface_num} className="border-t hover:bg-gray-50">
                           <td className="py-3 px-4 font-medium">Interface {interface_data.interface_num}</td>
-                          <td className="py-3 px-4 text-center">{interface_data.merged}</td>
-                          <td className="py-3 px-4 text-center">{interface_data.total_tasks > 0 ? ((interface_data.merged / interface_data.total_tasks) * 100).toFixed(2) : '0.00'}%</td>
                           <td className="py-3 px-4 text-center bg-red-50 font-semibold">{merged.expert}</td>
                           <td className="py-3 px-4 text-center bg-red-50">{expertPct}%</td>
                           <td className="py-3 px-4 text-center bg-orange-50 font-semibold">{merged.hard}</td>
@@ -326,8 +321,6 @@ const InterfaceView = ({ lastUpdate }) => {
                     })}
                     <tr className="border-t-2 font-bold bg-gray-50">
                       <td className="py-3 px-4">Total</td>
-                      <td className="py-3 px-4 text-center">{summary.total_merged}</td>
-                      <td className="py-3 px-4 text-center">{summary.total_tasks > 0 ? ((summary.total_merged / summary.total_tasks) * 100).toFixed(2) : 0}%</td>
                       <td className="py-3 px-4 text-center bg-red-50">{summary.complexity_breakdown.merged.expert}</td>
                       <td className="py-3 px-4 text-center bg-red-50">{summary.total_merged > 0 ? ((summary.complexity_breakdown.merged.expert / summary.total_merged) * 100).toFixed(2) : 0}%</td>
                       <td className="py-3 px-4 text-center bg-orange-50">{summary.complexity_breakdown.merged.hard}</td>
@@ -350,7 +343,6 @@ const InterfaceView = ({ lastUpdate }) => {
                   <thead>
                     <tr className="text-left text-xs font-medium text-gray-500 border-b-2">
                       <th className="pb-3 px-4">Interface</th>
-                      <th className="pb-3 px-4 text-center" colSpan="2">Count</th>
                       <th className="pb-3 px-4 text-center bg-red-50" colSpan="2">Expert</th>
                       <th className="pb-3 px-4 text-center bg-orange-50" colSpan="2">Hard</th>
                       <th className="pb-3 px-4 text-center bg-yellow-50" colSpan="2">Medium</th>
@@ -358,8 +350,6 @@ const InterfaceView = ({ lastUpdate }) => {
                     </tr>
                     <tr className="text-xs font-medium text-gray-500 border-b">
                       <th className="pb-2"></th>
-                      <th className="pb-2 text-center">Count</th>
-                      <th className="pb-2 text-center">Percent</th>
                       <th className="pb-2 text-center bg-red-50">Count</th>
                       <th className="pb-2 text-center bg-red-50">Percent</th>
                       <th className="pb-2 text-center bg-orange-50">Count</th>
@@ -377,13 +367,10 @@ const InterfaceView = ({ lastUpdate }) => {
                       const expertPct = total > 0 ? ((allStatuses.expert / total) * 100).toFixed(2) : '0.00';
                       const hardPct = total > 0 ? ((allStatuses.hard / total) * 100).toFixed(2) : '0.00';
                       const mediumPct = total > 0 ? ((allStatuses.medium / total) * 100).toFixed(2) : '0.00';
-                      const nonMergedCount = interface_data.total_tasks - interface_data.merged;
                       
                       return (
                         <tr key={interface_data.interface_num} className="border-t hover:bg-gray-50">
                           <td className="py-3 px-4 font-medium">Interface {interface_data.interface_num}</td>
-                          <td className="py-3 px-4 text-center">{nonMergedCount}</td>
-                          <td className="py-3 px-4 text-center">{((nonMergedCount / interface_data.total_tasks) * 100).toFixed(2)}%</td>
                           <td className="py-3 px-4 text-center bg-red-50 font-semibold">{allStatuses.expert}</td>
                           <td className="py-3 px-4 text-center bg-red-50">{expertPct}%</td>
                           <td className="py-3 px-4 text-center bg-orange-50 font-semibold">{allStatuses.hard}</td>
@@ -397,8 +384,6 @@ const InterfaceView = ({ lastUpdate }) => {
                     })}
                     <tr className="border-t-2 font-bold bg-gray-50">
                       <td className="py-3 px-4">Total</td>
-                      <td className="py-3 px-4 text-center">{summary.total_tasks}</td>
-                      <td className="py-3 px-4 text-center">100%</td>
                       <td className="py-3 px-4 text-center bg-red-50">{summary.complexity_breakdown.all_statuses.expert}</td>
                       <td className="py-3 px-4 text-center bg-red-50">{summary.total_tasks > 0 ? ((summary.complexity_breakdown.all_statuses.expert / summary.total_tasks) * 100).toFixed(2) : 0}%</td>
                       <td className="py-3 px-4 text-center bg-orange-50">{summary.complexity_breakdown.all_statuses.hard}</td>
