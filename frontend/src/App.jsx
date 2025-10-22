@@ -82,7 +82,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="h-screen flex flex-col bg-gray-50 overflow-hidden">
       <Toaster 
         position="top-right"
         toastOptions={{
@@ -104,21 +104,27 @@ function App() {
         }}
       />
       
+      {/* Fixed Header */}
       <Header 
         sidebarOpen={sidebarOpen} 
         setSidebarOpen={setSidebarOpen}
         lastUpdate={lastUpdate}
       />
       
-      <div className="flex">
+      {/* Flex container for sidebar and main content */}
+      <div className="flex flex-1 overflow-hidden">
         <Sidebar 
           activeView={activeView} 
           setActiveView={setActiveView}
           isOpen={sidebarOpen}
         />
         
-        <main className={`flex-1 transition-all duration-300 ${sidebarOpen ? 'ml-64' : 'ml-0'}`}>
-          <div className="p-6">
+        <main className={`flex-1 transition-all duration-300 ${
+          ['interfaces', 'domains', 'dashboard'].includes(activeView) ? 'overflow-auto' : 'overflow-hidden'
+        } ${sidebarOpen ? 'ml-64' : 'ml-0'}`}>
+          <div className={`p-6 ${
+            ['interfaces', 'domains', 'dashboard'].includes(activeView) ? '' : 'h-full overflow-hidden'
+          }`}>
             {renderView()}
           </div>
         </main>

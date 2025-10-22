@@ -25,8 +25,11 @@ class GitHubService:
         self.pr_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})$')
         # Pattern for task files (same format, but may have .json extension)
         self.task_file_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})(?:\.json)?$')
-        # Pattern to extract week and pod from file paths: week_12/bandreddy_pod/task_name/...
-        self.week_pod_pattern = re.compile(r'^week_(\d+)/([^/]+)/')
+        # Pattern to extract week and pod from file paths
+        # Supports both formats:
+        # 1. Old: week_12/bandreddy_pod/task_name/...
+        # 2. New: week_13_hr_talent/mansoor_pod/task_name/...
+        self.week_pod_pattern = re.compile(r'^week_(\d+)(?:_[\w_-]+)?/([^/]+)/')
         
     def parse_pr_title(self, title: str) -> Optional[Dict]:
         """Parse PR title to extract trainer, domain, interface number, complexity, and timestamp.
@@ -247,7 +250,9 @@ class GitHubService:
     def parse_week_pod_from_pr_files(self, pr) -> Optional[Tuple[int, str]]:
         """
         Parse week number and pod name from PR file changes.
-        Expected format: week_12/bandreddy_pod/task_folder/...
+        Supports both formats:
+        1. Old: week_12/bandreddy_pod/task_folder/...
+        2. New: week_13_hr_talent/mansoor_pod/task_folder/...
         Returns: (week_num, pod_name) or None if not found
         """
         try:
