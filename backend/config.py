@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     
     # Server Configuration
     backend_host: str = "0.0.0.0"
-    backend_port: int = 8000
+    backend_port: int = 4000
     frontend_url: str = "http://localhost:3000"
     
     # Database Configuration - REQUIRED
@@ -44,8 +44,8 @@ class Settings(BaseSettings):
     google_client_cert_url: str
     google_universe_domain: str = "googleapis.com"
     
-    # Recognized Domains - domains not in this list will be grouped as "Others"
-    recognized_domains: List[str] = [
+    # Allowed Domains - domains not in this list will be grouped as "Others"
+    allowed_domains: List[str] = [
         'enterprise_wiki',
         'finance',
         'fund_finance',
@@ -56,6 +56,10 @@ class Settings(BaseSettings):
         'it_incident_management',
         'smart_home'
     ]
+    
+    # Dynamic domain configuration
+    enable_dynamic_domains: bool = False
+    last_domain_refresh: Optional[float] = None
     
     @property
     def database_url(self) -> str:

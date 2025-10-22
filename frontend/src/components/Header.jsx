@@ -7,11 +7,12 @@ import {
   BellIcon,
   ClockIcon
 } from '@heroicons/react/24/outline';
-import { triggerSync } from '../services/api';
+import { triggerSync, refreshDomains } from '../services/api';
 import toast from 'react-hot-toast';
 
 const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
   const [syncing, setSyncing] = React.useState(false);
+  const [syncingDomains, setSyncingDomains] = React.useState(false);
   const [currentTime, setCurrentTime] = React.useState(new Date());
   const [justUpdated, setJustUpdated] = React.useState(false);
 
@@ -57,6 +58,26 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
       toast.error('Failed to start sync');
       console.error('Sync error:', error);
       setSyncing(false);
+    }
+  };
+
+  const handleSyncDomains = async () => {
+    setSyncingDomains(true);
+    try {
+      const response = await refreshDomains();
+      const { status, message, count } = response.data;
+      
+      if (status === 'success') {
+        toast.success(`Domains refreshed: ${count} domains discovered`, { duration: 3000 });
+        console.log(`Domains synced: ${message}`);
+      } else {
+        toast.error(message || 'Failed to refresh domains', { duration: 3000 });
+      }
+    } catch (error) {
+      toast.error('Failed to refresh domains');
+      console.error('Domain refresh error:', error);
+    } finally {
+      setSyncingDomains(false);
     }
   };
 
@@ -119,7 +140,22 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
               `}
             >
               <ArrowPathIcon className={`h-4 w-4 mr-1.5 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Syncing...' : 'Sync'}
+              {syncing ? 'Syncing...' : 'Sync PRs'}
+            </button>
+
+            <button
+              onClick={handleSyncDomains}
+              disabled={syncingDomains}
+              className={`
+                inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md
+                ${syncingDomains 
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                  : 'text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500'
+                }
+              `}
+            >
+              <ArrowPathIcon className={`h-4 w-4 mr-1.5 ${syncingDomains ? 'animate-spin' : ''}`} />
+              {syncingDomains ? 'Syncing...' : 'Sync Domains'}
             </button>
             
             <button className="p-2 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500">

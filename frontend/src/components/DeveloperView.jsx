@@ -1,35 +1,78 @@
 import React, { useState, useEffect } from 'react';
-import { getDeveloperMetrics } from '../services/api';
+import axios from 'axios';
+import { API_BASE_URL } from '../services/api.config';
 import { 
   UserIcon, 
   DocumentTextIcon, 
   ArrowPathIcon,
   CheckCircleIcon,
   ChevronUpIcon,
-  ChevronDownIcon
+  ChevronDownIcon,
+  MagnifyingGlassIcon,
+  FunnelIcon
 } from '@heroicons/react/24/outline';
 
 const DeveloperView = ({ lastUpdate }) => {
   const [developers, setDevelopers] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [isFiltering, setIsFiltering] = useState(false);
   const [sortBy, setSortBy] = useState('total_prs');
   const [sortOrder, setSortOrder] = useState('desc');
+  
+  // Filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+  const [selectedDomain, setSelectedDomain] = useState('');
+  const [domains, setDomains] = useState([]);
+
+  useEffect(() => {
+    fetchDomains();
+  }, []);
+
+  // Debounce search term
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 300); // Wait 300ms after user stops typing
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
   useEffect(() => {
     fetchDevelopers();
-  }, [lastUpdate, sortBy]);
+  }, [lastUpdate, sortBy, debouncedSearchTerm, selectedDomain]);
+
+  const fetchDomains = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/domains/list`);
+      setDomains(response.data.domains || []);
+    } catch (error) {
+      console.error('Error fetching domains:', error);
+    }
+  };
 
   const fetchDevelopers = async () => {
-    setLoading(true);
+    // Only show full loading on initial load, use subtle indicator for filtering
+    if (developers.length === 0) {
+      setLoading(true);
+    } else {
+      setIsFiltering(true);
+    }
+    
     try {
-      const response = await getDeveloperMetrics({ sort_by: sortBy });
-      setDevelopers(response.data.data);  // Updated: response.data.data
-      setTotal(response.data.total);      // New: get total count
+      const params = { sort_by: sortBy };
+      if (debouncedSearchTerm) params.search = debouncedSearchTerm;
+      if (selectedDomain) params.domain = selectedDomain;
+      
+      const response = await axios.get(`${API_BASE_URL}/developers`, { params });
+      setDevelopers(response.data.data);
+      setTotal(response.data.total);
     } catch (error) {
       console.error('Error fetching developers:', error);
     } finally {
       setLoading(false);
+      setIsFiltering(false);
     }
   };
 
@@ -61,8 +104,52 @@ const DeveloperView = ({ lastUpdate }) => {
         <h2 className="text-3xl font-bold text-gray-900">Developers</h2>
         <div className="flex items-center space-x-4">
           <span className="text-sm text-gray-500">
-            Total: {total} developers
+            Showing: {developers.length} / {total} developers
+            {isFiltering && (
+              <svg className="inline-block animate-spin h-3 w-3 ml-2 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            )}
           </span>
+        </div>
+      </div>
+
+      {/* Search and Filters */}
+      <div className="card">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Search Bar */}
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
+            </div>
+            <input
+              type="text"
+              placeholder="Search by developer name..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            />
+          </div>
+
+          {/* Domain Filter */}
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <FunnelIcon className="h-5 w-5 text-gray-400" />
+            </div>
+            <select
+              value={selectedDomain}
+              onChange={(e) => setSelectedDomain(e.target.value)}
+              className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+            >
+              <option value="">All Domains</option>
+              {domains.map((domain) => (
+                <option key={domain.id} value={domain.name}>
+                  {domain.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -73,6 +160,9 @@ const DeveloperView = ({ lastUpdate }) => {
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Developer
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Email
                 </th>
                 <th 
                   className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
@@ -148,6 +238,11 @@ const DeveloperView = ({ lastUpdate }) => {
                             @{dev.github_login || 'N/A'}
                           </div>
                         </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="text-sm text-gray-900">
+                        {dev.email || 'N/A'}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">

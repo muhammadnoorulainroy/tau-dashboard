@@ -17,8 +17,8 @@ LOG_FILE="logs/backend_${TIMESTAMP}.log"
 
 echo "📝 Logging to: ${LOG_FILE}"
 
-# Start uvicorn with reload
-uvicorn main:app --reload > "${LOG_FILE}" 2>&1 &
+# Start uvicorn with reload on port 4000
+uvicorn main:app --host 0.0.0.0 --port 4000 --reload > "${LOG_FILE}" 2>&1 &
 
 BACKEND_PID=$!
 echo "✅ Backend started with PID: ${BACKEND_PID}"

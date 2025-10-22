@@ -6,6 +6,7 @@ class DeveloperMetrics(BaseModel):
     id: int
     username: str
     github_login: Optional[str]
+    email: Optional[str] = None
     total_prs: int
     open_prs: int
     merged_prs: int
@@ -19,6 +20,8 @@ class DeveloperMetrics(BaseModel):
 class ReviewerMetrics(BaseModel):
     id: int
     username: str
+    email: Optional[str] = None
+    role: Optional[str] = None
     total_reviews: int
     approved_reviews: int
     changes_requested: int

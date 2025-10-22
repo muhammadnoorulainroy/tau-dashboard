@@ -11,7 +11,7 @@ import logging
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState, DeveloperHierarchy
+from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState, DeveloperHierarchy, User, Domain, Interface, Week, Pod, Review, InterfaceMetrics
 from github_service import GitHubService
 from google_sheets_service import GoogleSheetsService
 from sync_state import should_do_full_sync, get_last_sync_time, get_sync_description
@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 # Thread pool for running blocking sync operations
 sync_executor = ThreadPoolExecutor(max_workers=3)
+
+# Track active sync tasks for graceful shutdown
+active_sync_tasks = set()
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -48,6 +51,48 @@ class ConnectionManager:
                 pass
 
 manager = ConnectionManager()
+
+# Helper function to get email from developer_hierarchy
+def get_developer_email(github_login: str, db: Session) -> Optional[str]:
+    """
+    Get developer email from developer_hierarchy table.
+    Matches github_login (author_login from PR) with github_user (case-insensitive).
+    Returns turing_email if found.
+    """
+    if not github_login:
+        return None
+    
+    try:
+        dev_hierarchy = db.query(DeveloperHierarchy).filter(
+            func.lower(DeveloperHierarchy.github_user) == github_login.lower()
+        ).first()
+        
+        return dev_hierarchy.turing_email if dev_hierarchy else None
+    except Exception as e:
+        logger.debug(f"Could not fetch email for {github_login}: {e}")
+        return None
+
+# Helper function to get email and role from developer_hierarchy
+def get_reviewer_info(github_username: str, db: Session) -> tuple[Optional[str], Optional[str]]:
+    """
+    Get reviewer email and role from developer_hierarchy table.
+    Matches github_username with github_user (case-insensitive).
+    Returns (turing_email, role) if found.
+    """
+    if not github_username:
+        return None, None
+    
+    try:
+        dev_hierarchy = db.query(DeveloperHierarchy).filter(
+            func.lower(DeveloperHierarchy.github_user) == github_username.lower()
+        ).first()
+        
+        if dev_hierarchy:
+            return dev_hierarchy.turing_email, dev_hierarchy.role
+        return None, None
+    except Exception as e:
+        logger.debug(f"Could not fetch info for {github_username}: {e}")
+        return None, None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -103,12 +148,29 @@ async def lifespan(app: FastAPI):
         logger.warning("Application will continue, but hierarchy data may be outdated")
         # Continue anyway to allow the app to start
     
+    # Update allowed domains from GitHub on startup
+    try:
+        logger.info("=" * 60)
+        logger.info("Loading domain configuration...")
+        logger.info("=" * 60)
+        
+        from config import settings
+        logger.info(f"✅ Domains loaded: {len(settings.allowed_domains)} domains")
+        logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
+        logger.info("=" * 60)
+    except Exception as e:
+        logger.error(f"Failed to load domains: {str(e)}")
+        logger.warning("Application will continue with fallback domain list")
+        # Continue anyway to allow the app to start
+    
     # Start background sync task
     background_task = None
+    domain_refresh_task = None
     try:
-        from background_tasks import start_background_sync
+        from background_tasks import start_background_sync, start_domain_refresh
         background_task = asyncio.create_task(start_background_sync(manager))
-        logger.info("Background sync task started")
+        domain_refresh_task = asyncio.create_task(start_domain_refresh())
+        logger.info("Background sync and domain refresh tasks started")
     except ImportError as e:
         logger.warning(f"Background sync module not available: {str(e)}")
     except Exception as e:
@@ -129,13 +191,43 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down...")
+    
+    # Cancel background periodic sync task
     if background_task:
-        logger.info("Cancelling background task...")
+        logger.info("Cancelling background periodic sync task...")
         background_task.cancel()
         try:
             await background_task
         except asyncio.CancelledError:
-            logger.info("Background task cancelled successfully")
+            logger.info("Background periodic sync task cancelled")
+    
+    # Cancel domain refresh task
+    if domain_refresh_task:
+        logger.info("Cancelling domain refresh task...")
+        domain_refresh_task.cancel()
+        try:
+            await domain_refresh_task
+        except asyncio.CancelledError:
+            logger.info("Domain refresh task cancelled")
+    
+    # Cancel all active manual sync tasks
+    if active_sync_tasks:
+        logger.info(f"Cancelling {len(active_sync_tasks)} active sync task(s)...")
+        for task in list(active_sync_tasks):
+            task.cancel()
+        
+        # Wait briefly for cancellation (don't block forever)
+        try:
+            await asyncio.wait(active_sync_tasks, timeout=2.0)
+        except asyncio.TimeoutError:
+            logger.warning("Some sync tasks did not cancel in time")
+        
+        logger.info("Active sync tasks cancelled")
+    
+    # Shutdown thread pool without waiting for pending tasks
+    logger.info("Shutting down thread pool executor...")
+    sync_executor.shutdown(wait=False, cancel_futures=True)
+    
     logger.info("Shutdown complete")
 
 app = FastAPI(
@@ -150,7 +242,7 @@ from config import settings
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:5173"],  # Allow configured frontend URL
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -161,16 +253,22 @@ def read_root():
     return {"message": "TAU Dashboard API", "status": "running"}
 
 @app.get("/api/overview", response_model=DashboardOverview)
+@app.get("/api/dashboard", response_model=DashboardOverview)  # Alias for compatibility
 def get_dashboard_overview(db: Session = Depends(get_db)):
     """Get overall dashboard metrics."""
     try:
+        from config import settings
+        
         total_prs = db.query(PullRequest).count()
         open_prs = db.query(PullRequest).filter_by(state='open').count()
         merged_prs = db.query(PullRequest).filter_by(merged=True).count()
         
         total_developers = db.query(Developer).count()
         total_reviewers = db.query(Reviewer).count()
-        total_domains = db.query(DomainMetrics).count()
+        # Only count allowed domains from config
+        total_domains = db.query(DomainMetrics).filter(
+            DomainMetrics.domain.in_(settings.allowed_domains)
+        ).count()
         
         # Calculate average rework
         avg_rework = db.query(PullRequest).with_entities(
@@ -208,16 +306,34 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
 
 @app.get("/api/developers", response_model=PaginatedDevelopers)
 def get_developer_metrics(
-    limit: int = 50,
+    limit: int = 200,  # Increased default limit
     offset: int = 0,
     sort_by: str = "total_prs",
+    search: str = None,
+    domain: str = None,
     db: Session = Depends(get_db)
 ):
-    """Get developer metrics with pagination."""
+    """Get developer metrics with pagination, search, and filters."""
     try:
         query = db.query(Developer)
         
-        # Get total count
+        # Apply search filter (by username)
+        if search:
+            query = query.filter(Developer.username.ilike(f"%{search}%"))
+        
+        # Apply domain filter
+        if domain:
+            # Filter developers who have PRs in this domain
+            # Get usernames of developers in this domain from PullRequest table
+            from sqlalchemy import distinct
+            pr_subquery = db.query(distinct(PullRequest.developer_username)).filter(
+                PullRequest.domain == domain
+            )
+            developer_usernames = [username[0] for username in pr_subquery.all() if username[0]]
+            if developer_usernames:
+                query = query.filter(Developer.username.in_(developer_usernames))
+        
+        # Get total count after filters
         total = query.count()
         
         # Apply sorting
@@ -233,8 +349,29 @@ def get_developer_metrics(
         # Apply pagination
         developers = query.offset(offset).limit(limit).all()
         
+        # Build developer metrics with emails from developer_hierarchy
+        developer_metrics = []
+        for dev in developers:
+            # Get email by matching github_login with github_user from developer_hierarchy
+            email = get_developer_email(dev.github_login, db)
+            
+            # Convert to dict, add email, then create DeveloperMetrics
+            dev_dict = {
+                'id': dev.id,
+                'username': dev.username,
+                'github_login': dev.github_login,
+                'email': email,
+                'total_prs': dev.total_prs,
+                'open_prs': dev.open_prs,
+                'merged_prs': dev.merged_prs,
+                'total_rework': dev.total_rework,
+                'last_updated': dev.last_updated,
+                'metrics': dev.metrics
+            }
+            developer_metrics.append(DeveloperMetrics(**dev_dict))
+        
         return PaginatedDevelopers(
-            data=[DeveloperMetrics.from_orm(dev) for dev in developers],
+            data=developer_metrics,
             total=total,
             limit=limit,
             offset=offset
@@ -267,16 +404,36 @@ def get_developer_details(username: str, db: Session = Depends(get_db)):
 
 @app.get("/api/reviewers", response_model=PaginatedReviewers)
 def get_reviewer_metrics(
-    limit: int = 50,
+    limit: int = 200,  # Increased default limit
     offset: int = 0,
     sort_by: str = "total_reviews",
+    search: str = None,
+    domain: str = None,
     db: Session = Depends(get_db)
 ):
-    """Get reviewer metrics with pagination."""
+    """Get reviewer metrics with pagination, search, and filters."""
     try:
         query = db.query(Reviewer)
         
-        # Get total count
+        # Apply search filter (by username)
+        if search:
+            query = query.filter(Reviewer.username.ilike(f"%{search}%"))
+        
+        # Apply domain filter
+        if domain:
+            # Filter reviewers who have reviewed PRs in this domain
+            # Get reviewer usernames from Review table joined with PRs in this domain
+            from sqlalchemy import distinct
+            review_subquery = db.query(distinct(Review.reviewer_login)).join(
+                PullRequest, Review.pull_request_id == PullRequest.id
+            ).filter(
+                PullRequest.domain == domain
+            )
+            reviewer_usernames = [username[0] for username in review_subquery.all() if username[0]]
+            if reviewer_usernames:
+                query = query.filter(Reviewer.username.in_(reviewer_usernames))
+        
+        # Get total count after filters
         total = query.count()
         
         # Apply sorting
@@ -290,8 +447,28 @@ def get_reviewer_metrics(
         # Apply pagination
         reviewers = query.offset(offset).limit(limit).all()
         
+        # Build reviewer metrics with emails and roles from developer_hierarchy
+        reviewer_metrics = []
+        for rev in reviewers:
+            # Get email and role by matching username with github_user from developer_hierarchy
+            email, role = get_reviewer_info(rev.username, db)
+            
+            # Convert to dict, add email and role, then create ReviewerMetrics
+            rev_dict = {
+                'id': rev.id,
+                'username': rev.username,
+                'email': email,
+                'role': role,
+                'total_reviews': rev.total_reviews,
+                'approved_reviews': rev.approved_reviews,
+                'changes_requested': rev.changes_requested,
+                'last_updated': rev.last_updated,
+                'metrics': rev.metrics
+            }
+            reviewer_metrics.append(ReviewerMetrics(**rev_dict))
+        
         return PaginatedReviewers(
-            data=[ReviewerMetrics.from_orm(rev) for rev in reviewers],
+            data=reviewer_metrics,
             total=total,
             limit=limit,
             offset=offset
@@ -299,33 +476,6 @@ def get_reviewer_metrics(
     except Exception as e:
         logger.error(f"Error getting reviewer metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/domains/list")
-def get_domains_list(db: Session = Depends(get_db)):
-    """Get list of all unique domains (recognized domains + Others)"""
-    try:
-        # Get all unique domains from database
-        db_domains = db.query(PullRequest.domain).filter(
-            PullRequest.domain.isnot(None)
-        ).distinct().all()
-        
-        # Normalize domains
-        normalized = set()
-        for (domain,) in db_domains:
-            if domain:
-                normalized.add(normalize_domain(domain))
-        
-        # Return sorted list: recognized domains alphabetically, then Others
-        result = sorted([d for d in normalized if d in settings.recognized_domains])
-        if 'Others' in normalized:
-            result.append('Others')
-        
-        logger.info(f"Returning {len(result)} domains: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"Error getting domains list: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api/statuses/list")
 def get_statuses_list(db: Session = Depends(get_db)):
@@ -348,12 +498,75 @@ def get_statuses_list(db: Session = Depends(get_db)):
 
 @app.get("/api/domains", response_model=List[DomainMetricsResponse])
 def get_domain_metrics(db: Session = Depends(get_db)):
-    """Get metrics for all domains."""
+    """Get metrics for allowed domains only."""
     try:
-        domains = db.query(DomainMetrics).order_by(DomainMetrics.total_tasks.desc()).all()
+        # Filter to show only allowed domains from config
+        domains = db.query(DomainMetrics).filter(
+            DomainMetrics.domain.in_(settings.allowed_domains)
+        ).order_by(DomainMetrics.total_tasks.desc()).all()
         return [DomainMetricsResponse.from_orm(dom) for dom in domains]
     except Exception as e:
         logger.error(f"Error getting domain metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/domains/list")
+def get_domains_list(db: Session = Depends(get_db)):
+    """Get list of allowed domains with IDs."""
+    from database import Domain
+    try:
+        # Filter to show only allowed domains from config
+        domains = db.query(Domain).filter(
+            Domain.domain_name.in_(settings.allowed_domains)
+        ).order_by(Domain.domain_name).all()
+        
+        return {
+            'domains': [
+                {
+                    'id': domain.id,
+                    'name': domain.domain_name
+                }
+                for domain in domains
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error getting domains list: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/domains/config/current")
+def get_current_domains_config():
+    """Get current allowed domains configuration."""
+    from config import settings
+    import time
+    
+    last_refresh_time = None
+    if settings.last_domain_refresh:
+        last_refresh_time = datetime.fromtimestamp(settings.last_domain_refresh, tz=timezone.utc).isoformat()
+    
+    return {
+        'allowed_domains': sorted(settings.allowed_domains),
+        'count': len(settings.allowed_domains),
+        'dynamic_discovery_enabled': settings.enable_dynamic_domains,
+        'last_refresh': last_refresh_time,
+        'source': 'github_dynamic' if settings.enable_dynamic_domains else 'hardcoded_fallback'
+    }
+
+@app.post("/api/domains/config/refresh")
+def refresh_domains_config():
+    """Manually trigger domain refresh from GitHub."""
+    from config import settings
+    
+    try:
+        logger.info("Manual domain refresh triggered via API")
+        
+        # Return current domain configuration
+        return {
+            'status': 'success',
+            'message': 'Domain configuration retrieved',
+            'allowed_domains': sorted(settings.allowed_domains),
+            'count': len(settings.allowed_domains)
+        }
+    except Exception as e:
+        logger.error(f"Error refreshing domains via API: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/domains/{domain}", response_model=DomainMetricsResponse)
@@ -525,6 +738,7 @@ async def trigger_sync(
         
         # Background task to run sync and notify when done
         async def run_sync_and_notify():
+            task = asyncio.current_task()
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
@@ -545,15 +759,23 @@ async def trigger_sync(
                     }
                 })
                 logger.info(f"✅ Sync complete, notified clients: {result['count']} PRs")
+            except asyncio.CancelledError:
+                logger.info("Sync task cancelled during shutdown")
+                raise
             except Exception as e:
                 logger.error(f"❌ Error in background sync: {str(e)}")
                 await manager.broadcast({
                     'type': 'sync_error',
                     'data': {'error': str(e)}
                 })
+            finally:
+                # Remove task from active set
+                if task in active_sync_tasks:
+                    active_sync_tasks.discard(task)
         
         # Start sync in background (don't await)
-        asyncio.create_task(run_sync_and_notify())
+        task = asyncio.create_task(run_sync_and_notify())
+        active_sync_tasks.add(task)
         
         # Return immediately
         logger.info(f"🚀 Sync started in background: {sync_desc}")
@@ -581,7 +803,7 @@ def normalize_domain(domain: str) -> str:
     domain_lower = domain.lower().strip()
     
     # Check if domain matches any recognized domain (case-insensitive)
-    for recognized in settings.recognized_domains:
+    for recognized in settings.allowed_domains:
         if domain_lower == recognized.lower():
             return recognized
     
@@ -639,9 +861,9 @@ def get_domain_aggregation(db: Session = Depends(get_db)):
             metrics = calculate_metrics_from_prs(prs)
             results.append(AggregationMetrics(name=domain, **metrics))
         
-        # Sort: recognized domains alphabetically, then Others at the end
+        # Sort: allowed domains alphabetically, then Others at the end
         recognized_results = sorted(
-            [r for r in results if r.name in settings.recognized_domains],
+            [r for r in results if r.name in settings.allowed_domains],
             key=lambda x: x.name
         )
         others_results = [r for r in results if r.name == 'Others']
@@ -1074,6 +1296,582 @@ def get_timeline_stats(
         }
     except Exception as e:
         logger.error(f"Error getting timeline stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/interfaces")
+def get_interface_metrics(
+    db: Session = Depends(get_db)
+):
+    """Get interface metrics with complexity breakdown and weekly stats (interfaces 1-5 only)."""
+    try:
+        # Filter to show only interfaces 1-5
+        interfaces = db.query(InterfaceMetrics).filter(
+            InterfaceMetrics.interface_num >= 1,
+            InterfaceMetrics.interface_num <= 5
+        ).order_by(InterfaceMetrics.interface_num).all()
+        
+        result = []
+        for interface in interfaces:
+            # Format the interface data with all metrics
+            interface_data = {
+                'interface_num': interface.interface_num,
+                'total_tasks': interface.total_tasks,
+                'statuses': {
+                    'discarded': interface.discarded,
+                    'expert_approved': interface.expert_approved,
+                    'expert_review_pending': interface.expert_review_pending,
+                    'good_task': interface.good_task,
+                    'merged': interface.merged,
+                    'pending_review': interface.pending_review,
+                    'pod_lead_approved': interface.pod_lead_approved,
+                    'ready_to_merge': interface.ready_to_merge,
+                    'resubmitted': interface.resubmitted
+                },
+                'rework': interface.rework,
+                'complexity_breakdown': {
+                    'merged': {
+                        'expert': interface.merged_expert_count,
+                        'hard': interface.merged_hard_count,
+                        'medium': interface.merged_medium_count,
+                        'total': interface.merged
+                    },
+                    'all_statuses': {  # All non-merged PRs
+                        'expert': interface.all_expert_count,
+                        'hard': interface.all_hard_count,
+                        'medium': interface.all_medium_count,
+                        'total': interface.total_tasks - interface.merged
+                    }
+                },
+                'percentages': interface.detailed_metrics.get('complexity_percentages', {}) if interface.detailed_metrics else {},
+                'weekly_stats': interface.weekly_stats,
+                'trainers': interface.detailed_metrics.get('trainers', {}) if interface.detailed_metrics else {},
+                'domains': interface.detailed_metrics.get('domains', {}) if interface.detailed_metrics else {},
+                'last_updated': interface.last_updated
+            }
+            result.append(interface_data)
+        
+        return {
+            'interfaces': result,
+            'total_interfaces': len(result)
+        }
+    except Exception as e:
+        logger.error(f"Error getting interface metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# NOTE: Specific routes must come BEFORE parameterized routes to avoid conflicts
+
+@app.get("/api/interfaces/filtered")
+def get_filtered_interface_metrics(
+    week_id: int = None,
+    domain_id: int = None,
+    trainer_id: int = None,
+    status: str = None,
+    db: Session = Depends(get_db)
+):
+    """Get filtered interface metrics by week, domain, trainer, and status."""
+    from database import Domain
+    try:
+        # Build query
+        query = db.query(PullRequest)
+        
+        # Apply filters
+        if week_id:
+            query = query.filter(PullRequest.week_id == week_id)
+        if domain_id:
+            query = query.filter(PullRequest.domain_id == domain_id)
+        if trainer_id:
+            query = query.filter(PullRequest.trainer_id == trainer_id)
+        if status:
+            if status == 'merged':
+                query = query.filter(PullRequest.merged == True)
+            elif status == 'open':
+                query = query.filter(PullRequest.state == 'open')
+        
+        # Get all matching PRs
+        prs = query.all()
+        
+        # Track overall status counts
+        status_counts = {
+            'merged': 0,
+            'open': 0,
+            'closed': 0,
+            'expert_approved': 0,
+            'pending_review': 0,
+            'discarded': 0,
+            'other': 0
+        }
+        
+        # Group by interface
+        interface_stats = {}
+        for pr in prs:
+            if not pr.interface_id:
+                continue
+            
+            interface_num = pr.interface_num
+            if interface_num not in range(1, 6):  # Only interfaces 1-5
+                continue
+            
+            if interface_num not in interface_stats:
+                interface_stats[interface_num] = {
+                    'interface_num': interface_num,
+                    'total_tasks': 0,
+                    'merged': 0,
+                    'open': 0,
+                    'rework': 0,
+                    'complexity': {
+                        'merged': {'expert': 0, 'hard': 0, 'medium': 0},
+                        'all': {'expert': 0, 'hard': 0, 'medium': 0}
+                    }
+                }
+            
+            stats = interface_stats[interface_num]
+            stats['total_tasks'] += 1
+            
+            # Track status
+            if pr.merged:
+                stats['merged'] += 1
+                status_counts['merged'] += 1
+                if pr.complexity == 'expert':
+                    stats['complexity']['merged']['expert'] += 1
+                elif pr.complexity == 'hard':
+                    stats['complexity']['merged']['hard'] += 1
+                elif pr.complexity == 'medium':
+                    stats['complexity']['merged']['medium'] += 1
+            elif pr.state == 'open':
+                stats['open'] += 1
+                status_counts['open'] += 1
+            elif pr.state == 'closed':
+                status_counts['closed'] += 1
+            
+            # Check labels for more specific status
+            if pr.labels:
+                labels_lower = [l.lower() for l in pr.labels]
+                if 'expert approved' in labels_lower:
+                    status_counts['expert_approved'] += 1
+                elif 'pending review' in labels_lower:
+                    status_counts['pending_review'] += 1
+                elif 'discarded' in labels_lower:
+                    status_counts['discarded'] += 1
+            
+            if pr.rework_count and pr.rework_count > 0:
+                stats['rework'] += pr.rework_count
+            
+            # All statuses complexity
+            if pr.complexity == 'expert':
+                stats['complexity']['all']['expert'] += 1
+            elif pr.complexity == 'hard':
+                stats['complexity']['all']['hard'] += 1
+            elif pr.complexity == 'medium':
+                stats['complexity']['all']['medium'] += 1
+        
+        # Convert to list and calculate percentages
+        interfaces = []
+        for interface_num in sorted(interface_stats.keys()):
+            stats = interface_stats[interface_num]
+            
+            # Calculate merged percentages
+            merged_total = stats['complexity']['merged']['expert'] + stats['complexity']['merged']['hard'] + stats['complexity']['merged']['medium']
+            merged_pct = {}
+            if merged_total > 0:
+                merged_pct = {
+                    'expert': round((stats['complexity']['merged']['expert'] / merged_total) * 100, 2),
+                    'hard': round((stats['complexity']['merged']['hard'] / merged_total) * 100, 2),
+                    'medium': round((stats['complexity']['merged']['medium'] / merged_total) * 100, 2)
+                }
+            
+            # Calculate all statuses percentages
+            all_total = stats['complexity']['all']['expert'] + stats['complexity']['all']['hard'] + stats['complexity']['all']['medium']
+            all_pct = {}
+            if all_total > 0:
+                all_pct = {
+                    'expert': round((stats['complexity']['all']['expert'] / all_total) * 100, 2),
+                    'hard': round((stats['complexity']['all']['hard'] / all_total) * 100, 2),
+                    'medium': round((stats['complexity']['all']['medium'] / all_total) * 100, 2)
+                }
+            
+            interfaces.append({
+                'interface_num': interface_num,
+                'total_tasks': stats['total_tasks'],
+                'merged': stats['merged'],
+                'open': stats['open'],
+                'rework': stats['rework'],
+                'complexity_breakdown': {
+                    'merged': {
+                        'expert': stats['complexity']['merged']['expert'],
+                        'hard': stats['complexity']['merged']['hard'],
+                        'medium': stats['complexity']['merged']['medium'],
+                        'total': merged_total,
+                        'percentages': merged_pct
+                    },
+                    'all_statuses': {
+                        'expert': stats['complexity']['all']['expert'],
+                        'hard': stats['complexity']['all']['hard'],
+                        'medium': stats['complexity']['all']['medium'],
+                        'total': all_total,
+                        'percentages': all_pct
+                    }
+                }
+            })
+        
+        # Calculate summary
+        total_tasks = sum(i['total_tasks'] for i in interfaces)
+        total_merged = sum(i['merged'] for i in interfaces)
+        total_open = sum(i['open'] for i in interfaces)
+        total_rework = sum(i['rework'] for i in interfaces)
+        
+        summary_merged_complexity = {
+            'expert': sum(i['complexity_breakdown']['merged']['expert'] for i in interfaces),
+            'hard': sum(i['complexity_breakdown']['merged']['hard'] for i in interfaces),
+            'medium': sum(i['complexity_breakdown']['merged']['medium'] for i in interfaces)
+        }
+        summary_all_complexity = {
+            'expert': sum(i['complexity_breakdown']['all_statuses']['expert'] for i in interfaces),
+            'hard': sum(i['complexity_breakdown']['all_statuses']['hard'] for i in interfaces),
+            'medium': sum(i['complexity_breakdown']['all_statuses']['medium'] for i in interfaces)
+        }
+        
+        return {
+            'interfaces': interfaces,
+            'summary': {
+                'total_tasks': total_tasks,
+                'total_merged': total_merged,
+                'total_open': total_open,
+                'total_rework': total_rework,
+                'statuses': status_counts,
+                'complexity_breakdown': {
+                    'merged': summary_merged_complexity,
+                    'all_statuses': summary_all_complexity
+                }
+            },
+            'filters': {
+                'week_id': week_id,
+                'domain_id': domain_id,
+                'trainer_id': trainer_id,
+                'status': status
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting filtered interface metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/interfaces/{interface_num}")
+def get_interface_details(
+    interface_num: int,
+    db: Session = Depends(get_db)
+):
+    """Get detailed metrics for a specific interface."""
+    try:
+        interface = db.query(InterfaceMetrics).filter_by(interface_num=interface_num).first()
+        
+        if not interface:
+            raise HTTPException(status_code=404, detail=f"Interface {interface_num} not found")
+        
+        # Get all PRs for this interface
+        prs = db.query(PullRequest).filter_by(interface_num=interface_num).all()
+        
+        # Group PRs by status
+        pr_list = []
+        for pr in prs:
+            pr_status = 'other'
+            if pr.merged:
+                pr_status = 'merged'
+            elif pr.labels:
+                labels_lower = [l.lower() for l in pr.labels]
+                if 'discarded' in labels_lower:
+                    pr_status = 'discarded'
+                elif 'ready to merge' in labels_lower:
+                    pr_status = 'ready_to_merge'
+                elif 'pod lead approved' in labels_lower:
+                    pr_status = 'pod_lead_approved'
+                elif 'expert approved' in labels_lower:
+                    pr_status = 'expert_approved'
+                elif 'good task' in labels_lower:
+                    pr_status = 'good_task'
+                elif 'expert review pending' in labels_lower:
+                    pr_status = 'expert_review_pending'
+                elif 'pending review' in labels_lower:
+                    pr_status = 'pending_review'
+                elif 'resubmitted' in labels_lower:
+                    pr_status = 'resubmitted'
+            
+            pr_list.append({
+                'number': pr.number,
+                'title': pr.title,
+                'trainer': pr.trainer_name,
+                'domain': pr.domain,
+                'complexity': pr.complexity,
+                'status': pr_status,
+                'merged': pr.merged,
+                'created_at': pr.created_at,
+                'rework_count': pr.rework_count,
+                'labels': pr.labels
+            })
+        
+        return {
+            'interface_num': interface.interface_num,
+            'total_tasks': interface.total_tasks,
+            'statuses': {
+                'discarded': interface.discarded,
+                'expert_approved': interface.expert_approved,
+                'expert_review_pending': interface.expert_review_pending,
+                'good_task': interface.good_task,
+                'merged': interface.merged,
+                'pending_review': interface.pending_review,
+                'pod_lead_approved': interface.pod_lead_approved,
+                'ready_to_merge': interface.ready_to_merge,
+                'resubmitted': interface.resubmitted
+            },
+            'rework': interface.rework,
+            'complexity_breakdown': {
+                'merged': {
+                    'expert': interface.merged_expert_count,
+                    'hard': interface.merged_hard_count,
+                    'medium': interface.merged_medium_count,
+                    'total': interface.merged,
+                    'percentages': interface.detailed_metrics.get('complexity_percentages', {}).get('merged', {}) if interface.detailed_metrics else {}
+                },
+                'all_statuses': {
+                    'expert': interface.all_expert_count,
+                    'hard': interface.all_hard_count,
+                    'medium': interface.all_medium_count,
+                    'total': interface.total_tasks - interface.merged,
+                    'percentages': interface.detailed_metrics.get('complexity_percentages', {}).get('all_statuses', {}) if interface.detailed_metrics else {}
+                }
+            },
+            'weekly_stats': interface.weekly_stats,
+            'pull_requests': pr_list,
+            'trainers': interface.detailed_metrics.get('trainers', {}) if interface.detailed_metrics else {},
+            'domains': interface.detailed_metrics.get('domains', {}) if interface.detailed_metrics else {},
+            'last_updated': interface.last_updated
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting interface details: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/weeks")
+def get_weeks(db: Session = Depends(get_db)):
+    """Get all available weeks."""
+    from database import Week
+    try:
+        weeks = db.query(Week).order_by(Week.week_num.desc()).all()
+        return {
+            'weeks': [
+                {
+                    'id': week.id,
+                    'week_name': week.week_name,
+                    'week_num': week.week_num
+                }
+                for week in weeks
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error getting weeks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/trainers")
+def get_trainers(db: Session = Depends(get_db)):
+    """Get list of all trainers."""
+    try:
+        trainers = db.query(User).filter(User.role == 'trainer').order_by(User.github_username).all()
+        return {
+            'trainers': [
+                {
+                    'id': trainer.id,
+                    'username': trainer.github_username
+                }
+                for trainer in trainers
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error getting trainers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/pr-status-breakdown")
+def get_pr_status_breakdown(
+    week_id: int = None,
+    domain_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """Get PR status breakdown by week and domain with complexity distribution."""
+    try:
+        # Build query
+        query = db.query(PullRequest)
+        
+        if week_id:
+            query = query.filter(PullRequest.week_id == week_id)
+        if domain_id:
+            query = query.filter(PullRequest.domain_id == domain_id)
+        
+        # Get all PRs
+        prs = query.all()
+        
+        # Status mapping based on labels
+        status_map = {
+            'discarded': 'Discarded',
+            'expert approved': 'Expert Approved',
+            'expert review pending': 'Expert Review Pending',
+            'good task': 'Good Task',
+            'pending review': 'Pending Review',
+            'pod lead approved': 'Pod Lead Approved',
+            'ready to merge': 'Ready To Merge',
+            'resubmitted': 'Resubmitted',
+            'rework': 'Rework',
+            'merged': 'Merged'
+        }
+        
+        # Initialize status breakdown
+        status_breakdown = {}
+        for status in status_map.values():
+            status_breakdown[status] = {
+                'count': 0,
+                'complexity': {
+                    'expert': 0,
+                    'hard': 0,
+                    'medium': 0
+                }
+            }
+        
+        # Process each PR
+        total_prs = len(prs)
+        for pr in prs:
+            status = None
+            
+            # Determine status from labels or merged state
+            if pr.merged:
+                status = 'Merged'
+            elif pr.labels:
+                labels_lower = [l.lower() for l in pr.labels]
+                for label, status_name in status_map.items():
+                    if label in labels_lower:
+                        status = status_name
+                        break
+            
+            # If no status found, skip
+            if not status or status not in status_breakdown:
+                continue
+            
+            # Count the PR
+            status_breakdown[status]['count'] += 1
+            
+            # Count complexity
+            if pr.complexity in ['expert', 'hard', 'medium']:
+                status_breakdown[status]['complexity'][pr.complexity] += 1
+        
+        # Calculate percentages and format response
+        result = []
+        for status, data in status_breakdown.items():
+            count = data['count']
+            if count == 0:
+                continue  # Skip statuses with no PRs
+            
+            # Calculate overall percentage
+            percent = (count / total_prs * 100) if total_prs > 0 else 0
+            
+            # Calculate complexity percentages
+            complexity_data = {}
+            for level in ['expert', 'hard', 'medium']:
+                level_count = data['complexity'][level]
+                level_percent = (level_count / count * 100) if count > 0 else 0
+                complexity_data[level] = {
+                    'count': level_count,
+                    'percent': round(level_percent, 2)
+                }
+            
+            result.append({
+                'status': status,
+                'count': count,
+                'percent': round(percent, 2),
+                'complexity': complexity_data
+            })
+        
+        # Sort by count descending
+        result.sort(key=lambda x: x['count'], reverse=True)
+        
+        return {
+            'total_prs': total_prs,
+            'breakdown': result
+        }
+    except Exception as e:
+        logger.error(f"Error getting PR status breakdown: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/interfaces/summary/all")
+def get_all_interfaces_summary(
+    db: Session = Depends(get_db)
+):
+    """Get summary statistics across all interfaces (interfaces 1-5 only)."""
+    try:
+        # Filter to show only interfaces 1-5
+        interfaces = db.query(InterfaceMetrics).filter(
+            InterfaceMetrics.interface_num >= 1,
+            InterfaceMetrics.interface_num <= 5
+        ).all()
+        
+        total_tasks = sum(i.total_tasks for i in interfaces)
+        total_merged = sum(i.merged for i in interfaces)
+        total_rework = sum(i.rework for i in interfaces)
+        
+        # Aggregate status counts
+        statuses = {
+            'discarded': sum(i.discarded for i in interfaces),
+            'expert_approved': sum(i.expert_approved for i in interfaces),
+            'expert_review_pending': sum(i.expert_review_pending for i in interfaces),
+            'good_task': sum(i.good_task for i in interfaces),
+            'merged': total_merged,
+            'pending_review': sum(i.pending_review for i in interfaces),
+            'pod_lead_approved': sum(i.pod_lead_approved for i in interfaces),
+            'ready_to_merge': sum(i.ready_to_merge for i in interfaces),
+            'resubmitted': sum(i.resubmitted for i in interfaces)
+        }
+        
+        # Aggregate complexity counts
+        complexity_merged = {
+            'expert': sum(i.merged_expert_count for i in interfaces),
+            'hard': sum(i.merged_hard_count for i in interfaces),
+            'medium': sum(i.merged_medium_count for i in interfaces)
+        }
+        
+        complexity_all_statuses = {
+            'expert': sum(i.all_expert_count for i in interfaces),
+            'hard': sum(i.all_hard_count for i in interfaces),
+            'medium': sum(i.all_medium_count for i in interfaces)
+        }
+        
+        # Calculate percentages
+        merged_total = sum(complexity_merged.values())
+        all_statuses_total = sum(complexity_all_statuses.values())
+        
+        return {
+            'total_interfaces': len(interfaces),
+            'total_tasks': total_tasks,
+            'total_merged': total_merged,
+            'total_rework': total_rework,
+            'statuses': statuses,
+            'complexity_breakdown': {
+                'merged': {
+                    **complexity_merged,
+                    'total': merged_total,
+                    'percentages': {
+                        'expert': round((complexity_merged['expert'] / merged_total * 100) if merged_total > 0 else 0, 2),
+                        'hard': round((complexity_merged['hard'] / merged_total * 100) if merged_total > 0 else 0, 2),
+                        'medium': round((complexity_merged['medium'] / merged_total * 100) if merged_total > 0 else 0, 2)
+                    }
+                },
+                'all_statuses': {
+                    **complexity_all_statuses,
+                    'total': all_statuses_total,
+                    'percentages': {
+                        'expert': round((complexity_all_statuses['expert'] / all_statuses_total * 100) if all_statuses_total > 0 else 0, 2),
+                        'hard': round((complexity_all_statuses['hard'] / all_statuses_total * 100) if all_statuses_total > 0 else 0, 2),
+                        'medium': round((complexity_all_statuses['medium'] / all_statuses_total * 100) if all_statuses_total > 0 else 0, 2)
+                    }
+                }
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting interfaces summary: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

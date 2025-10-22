@@ -22,11 +22,16 @@ def get_last_sync_time(db: Session) -> datetime:
     """
     Get the last sync time from the SyncState table.
     If no sync state exists, return default time (60 days ago).
+    Always returns timezone-aware datetime.
     """
     try:
         sync_state = db.query(SyncState).first()
         if sync_state and sync_state.last_sync_time:
-            return sync_state.last_sync_time
+            last_sync = sync_state.last_sync_time
+            # Ensure timezone-aware
+            if last_sync.tzinfo is None:
+                last_sync = last_sync.replace(tzinfo=timezone.utc)
+            return last_sync
         
         # Fallback: check most recent PR in database
         last_pr = db.query(PullRequest).order_by(
@@ -34,10 +39,16 @@ def get_last_sync_time(db: Session) -> datetime:
         ).first()
         
         if last_pr and last_pr.last_synced:
-            return last_pr.last_synced
+            last_synced = last_pr.last_synced
+            if last_synced.tzinfo is None:
+                last_synced = last_synced.replace(tzinfo=timezone.utc)
+            return last_synced
         
         if last_pr and last_pr.updated_at:
-            return last_pr.updated_at
+            updated_at = last_pr.updated_at
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            return updated_at
             
         # Default: 60 days ago for first sync
         return datetime.now(timezone.utc) - timedelta(days=60)
@@ -59,8 +70,15 @@ def should_do_full_sync(db: Session, full_sync_days: int = 60) -> bool:
         if not sync_state or not sync_state.last_sync_time:
             return True
         
+        # Handle timezone-naive datetime from database
+        last_sync = sync_state.last_sync_time
+        if last_sync.tzinfo is None:
+            last_sync = last_sync.replace(tzinfo=timezone.utc)
+        
         # If last sync was more than 7 days ago, do full sync
-        days_since_sync = (datetime.now(timezone.utc) - sync_state.last_sync_time).days
+        time_since_sync = datetime.now(timezone.utc) - last_sync
+        days_since_sync = time_since_sync.days
+        
         if days_since_sync > 7:
             return True
         
@@ -86,7 +104,12 @@ def get_sync_description(db: Session, full_sync_days: int = 60) -> str:
             return f"Full sync - fetching last {full_sync_days} days (last sync was over 7 days ago)"
     else:
         if sync_state and sync_state.last_sync_time:
-            hours_ago = (datetime.now(timezone.utc) - sync_state.last_sync_time).total_seconds() / 3600
+            # Handle timezone-naive datetime from database
+            last_sync = sync_state.last_sync_time
+            if last_sync.tzinfo is None:
+                last_sync = last_sync.replace(tzinfo=timezone.utc)
+            
+            hours_ago = (datetime.now(timezone.utc) - last_sync).total_seconds() / 3600
             if hours_ago < 1:
                 minutes = int(hours_ago * 60)
                 return f"Incremental sync - fetching updates from last {minutes} minute{'s' if minutes != 1 else ''}"
