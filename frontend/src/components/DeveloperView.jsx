@@ -40,6 +40,22 @@ const DeveloperView = ({ lastUpdate }) => {
   }, [searchTerm]);
 
   useEffect(() => {
+    fetchDomains();
+  }, []);
+
+  // Debounce search term
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 300); // Wait 300ms after user stops typing
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    // Clear current data immediately when filters change to prevent showing stale data
+    setDevelopers([]);
+    setTotal(0);
     fetchDevelopers();
   }, [lastUpdate, sortBy, debouncedSearchTerm, selectedDomain]);
 
@@ -267,14 +283,17 @@ const DeveloperView = ({ lastUpdate }) => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex flex-wrap gap-1">
-                        {dev.metrics?.domains && Object.keys(dev.metrics.domains).slice(0, 3).map(domain => (
+                        {dev.metrics?.domains && Array.isArray(dev.metrics.domains) && dev.metrics.domains.slice(0, 3).map(domain => (
                           <span key={domain} className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
                             {domain}
                           </span>
                         ))}
-                        {dev.metrics?.domains && Object.keys(dev.metrics.domains).length > 3 && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
-                            +{Object.keys(dev.metrics.domains).length - 3}
+                        {dev.metrics?.domains && Array.isArray(dev.metrics.domains) && dev.metrics.domains.length > 3 && (
+                          <span 
+                            className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 cursor-help"
+                            title={dev.metrics.domains.slice(3).join(', ')}
+                          >
+                            +{dev.metrics.domains.length - 3}
                           </span>
                         )}
                       </div>

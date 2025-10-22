@@ -151,15 +151,21 @@ async def lifespan(app: FastAPI):
     # Update allowed domains from GitHub on startup
     try:
         logger.info("=" * 60)
-        logger.info("Loading domain configuration...")
+        logger.info("Updating allowed domains from GitHub repo...")
         logger.info("=" * 60)
         
-        from config import settings
-        logger.info(f"✅ Domains loaded: {len(settings.allowed_domains)} domains")
-        logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
+        from config import update_allowed_domains, settings
+        success = update_allowed_domains(force=True)
+        
+        if success:
+            logger.info(f"✅ Domains updated: {len(settings.allowed_domains)} domains discovered")
+            logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
+        else:
+            logger.warning(f"⚠️  Using fallback domain list: {len(settings.allowed_domains)} domains")
+        
         logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"Failed to load domains: {str(e)}")
+        logger.error(f"Failed to update domains from GitHub: {str(e)}")
         logger.warning("Application will continue with fallback domain list")
         # Continue anyway to allow the app to start
     
@@ -265,10 +271,8 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
         
         total_developers = db.query(Developer).count()
         total_reviewers = db.query(Reviewer).count()
-        # Only count allowed domains from config
-        total_domains = db.query(DomainMetrics).filter(
-            DomainMetrics.domain.in_(settings.allowed_domains)
-        ).count()
+        # Count all allowed domains from config (not just those with PRs)
+        total_domains = len(settings.allowed_domains)
         
         # Calculate average rework
         avg_rework = db.query(PullRequest).with_entities(
@@ -313,26 +317,88 @@ def get_developer_metrics(
     domain: str = None,
     db: Session = Depends(get_db)
 ):
-    """Get developer metrics with pagination, search, and filters."""
+    """Get developer metrics with pagination, search, and filters. When domain is specified, shows domain-specific stats only."""
     try:
+        # If domain filter is applied, calculate stats from PRs in that domain only
+        if domain:
+            from sqlalchemy import func, case
+            
+            # Build base query with domain filter
+            pr_query = db.query(
+                PullRequest.developer_username.label('username'),
+                func.count(PullRequest.id).label('total_prs'),
+                func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
+                func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                func.sum(PullRequest.rework_count).label('total_rework'),
+                func.avg(case((PullRequest.merged == True, PullRequest.rework_count), else_=None)).label('avg_rework')
+            ).filter(
+                PullRequest.domain == domain
+            ).group_by(PullRequest.developer_username)
+            
+            # Apply search filter
+            if search:
+                pr_query = pr_query.filter(PullRequest.developer_username.ilike(f"%{search}%"))
+            
+            # Get all results for sorting and pagination
+            results = pr_query.all()
+            
+            # Sort results
+            if sort_by == "total_prs":
+                results = sorted(results, key=lambda x: x.total_prs or 0, reverse=True)
+            elif sort_by == "open_prs":
+                results = sorted(results, key=lambda x: x.open_prs or 0, reverse=True)
+            elif sort_by == "merged_prs":
+                results = sorted(results, key=lambda x: x.merged_prs or 0, reverse=True)
+            elif sort_by == "total_rework":
+                results = sorted(results, key=lambda x: x.total_rework or 0, reverse=True)
+            
+            total = len(results)
+            
+            # Apply pagination
+            paginated_results = results[offset:offset + limit]
+            
+            # Build response with domain-specific stats and domain list
+            from datetime import datetime, timezone
+            developers_data = []
+            for result in paginated_results:
+                # Get domains this developer has worked on (for display)
+                dev_domains_query = db.query(PullRequest.domain).filter(
+                    PullRequest.developer_username == result.username
+                ).distinct()
+                dev_domains = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+                
+                # Calculate merge rate for this domain only
+                merge_rate = (result.merged_prs / result.total_prs * 100) if result.total_prs else 0
+                
+                developers_data.append({
+                    'id': 0,  # Placeholder ID for domain-filtered view
+                    'username': result.username,
+                    'github_login': result.username,
+                    'total_prs': result.total_prs or 0,
+                    'open_prs': result.open_prs or 0,
+                    'merged_prs': result.merged_prs or 0,
+                    'total_rework': result.total_rework or 0,
+                    'last_updated': datetime.now(timezone.utc),
+                    'metrics': {
+                        'avg_rework': round(result.avg_rework or 0, 2),
+                        'merge_rate': round(merge_rate, 2),
+                        'domains': dev_domains
+                    }
+                })
+            
+            return PaginatedDevelopers(
+                data=developers_data,
+                total=total,
+                limit=limit,
+                offset=offset
+            )
+        
+        # No domain filter - return global stats from Developer table with enriched metrics
         query = db.query(Developer)
         
         # Apply search filter (by username)
         if search:
             query = query.filter(Developer.username.ilike(f"%{search}%"))
-        
-        # Apply domain filter
-        if domain:
-            # Filter developers who have PRs in this domain
-            # Get usernames of developers in this domain from PullRequest table
-            from sqlalchemy import distinct
-            pr_subquery = db.query(distinct(PullRequest.developer_username)).filter(
-                PullRequest.domain == domain
-            )
-            developer_usernames = [username[0] for username in pr_subquery.all() if username[0]]
-            if developer_usernames:
-                query = query.filter(Developer.username.in_(developer_usernames))
-        
         # Get total count after filters
         total = query.count()
         
@@ -349,29 +415,31 @@ def get_developer_metrics(
         # Apply pagination
         developers = query.offset(offset).limit(limit).all()
         
-        # Build developer metrics with emails from developer_hierarchy
-        developer_metrics = []
-        for dev in developers:
-            # Get email by matching github_login with github_user from developer_hierarchy
-            email = get_developer_email(dev.github_login, db)
-            
-            # Convert to dict, add email, then create DeveloperMetrics
-            dev_dict = {
-                'id': dev.id,
-                'username': dev.username,
-                'github_login': dev.github_login,
-                'email': email,
-                'total_prs': dev.total_prs,
-                'open_prs': dev.open_prs,
-                'merged_prs': dev.merged_prs,
-                'total_rework': dev.total_rework,
-                'last_updated': dev.last_updated,
-                'metrics': dev.metrics
+        # Enrich developer data with domains
+        enriched_developers = []
+        for developer in developers:
+            developer_dict = {
+                'id': developer.id,
+                'username': developer.username,
+                'github_login': developer.github_login,
+                'total_prs': developer.total_prs,
+                'open_prs': developer.open_prs,
+                'merged_prs': developer.merged_prs,
+                'total_rework': developer.total_rework,
+                'last_updated': developer.last_updated,
+                'metrics': developer.metrics or {}
             }
-            developer_metrics.append(DeveloperMetrics(**dev_dict))
+            
+            # Add domains this developer has worked on
+            dev_domains_query = db.query(PullRequest.domain).filter(
+                PullRequest.developer_username == developer.username
+            ).distinct()
+            developer_dict['metrics']['domains'] = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+            
+            enriched_developers.append(developer_dict)
         
         return PaginatedDevelopers(
-            data=developer_metrics,
+            data=enriched_developers,
             total=total,
             limit=limit,
             offset=offset
@@ -411,28 +479,110 @@ def get_reviewer_metrics(
     domain: str = None,
     db: Session = Depends(get_db)
 ):
-    """Get reviewer metrics with pagination, search, and filters."""
+    """Get reviewer metrics with pagination, search, and filters. When domain is specified, shows domain-specific stats only."""
     try:
+        # If domain filter is applied, calculate stats from Reviews in that domain only
+        if domain:
+            from sqlalchemy import func, case
+            
+            # Build base query with domain filter (join Review with PullRequest)
+            review_query = db.query(
+                Review.reviewer_login.label('username'),
+                func.count(Review.id).label('total_reviews'),
+                func.sum(case((Review.state == 'APPROVED', 1), else_=0)).label('approved_reviews'),
+                func.sum(case((Review.state == 'CHANGES_REQUESTED', 1), else_=0)).label('changes_requested'),
+                func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented')
+            ).join(
+                PullRequest, Review.pull_request_id == PullRequest.id
+            ).filter(
+                PullRequest.domain == domain
+            ).group_by(Review.reviewer_login)
+            
+            # Apply search filter
+            if search:
+                review_query = review_query.filter(Review.reviewer_login.ilike(f"%{search}%"))
+            
+            # Get all results for sorting and pagination
+            results = review_query.all()
+            
+            # Sort results
+            if sort_by == "total_reviews":
+                results = sorted(results, key=lambda x: x.total_reviews or 0, reverse=True)
+            elif sort_by == "approved_reviews":
+                results = sorted(results, key=lambda x: x.approved_reviews or 0, reverse=True)
+            elif sort_by == "changes_requested":
+                results = sorted(results, key=lambda x: x.changes_requested or 0, reverse=True)
+            
+            total = len(results)
+            
+            # Apply pagination
+            paginated_results = results[offset:offset + limit]
+            
+            # Build response with domain-specific stats and domain list
+            from datetime import datetime, timezone
+            reviewers_data = []
+            for result in paginated_results:
+                # Get domains this reviewer has worked on (for display)
+                rev_domains_query = db.query(PullRequest.domain).join(
+                    Review, Review.pull_request_id == PullRequest.id
+                ).filter(
+                    Review.reviewer_login == result.username
+                ).distinct()
+                rev_domains = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+                
+                # Calculate approval rate for this domain only
+                approval_rate = (result.approved_reviews / result.total_reviews * 100) if result.total_reviews else 0
+                
+                # Get recent reviews in this domain
+                recent_reviews = db.query(Review).join(
+                    PullRequest, Review.pull_request_id == PullRequest.id
+                ).filter(
+                    Review.reviewer_login == result.username,
+                    PullRequest.domain == domain
+                ).order_by(Review.submitted_at.desc()).limit(5).all()
+                
+                recent_reviews_list = [
+                    {
+                        'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
+                        'state': review.state,
+                        'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
+                    }
+                    for review in recent_reviews
+                ]
+                
+                # Get email and role for this reviewer
+                email, role = get_reviewer_info(result.username, db)
+                
+                reviewers_data.append({
+                    'id': 0,  # Placeholder ID for domain-filtered view
+                    'username': result.username,
+                    'email': email,
+                    'role': role,
+                    'total_reviews': result.total_reviews or 0,
+                    'approved_reviews': result.approved_reviews or 0,
+                    'changes_requested': result.changes_requested or 0,
+                    'last_updated': datetime.now(timezone.utc),
+                    'metrics': {
+                        'commented': result.commented or 0,
+                        'approval_rate': round(approval_rate, 2),
+                        'domains': rev_domains,
+                        'recent_reviews': recent_reviews_list
+                    }
+                })
+            
+            return PaginatedReviewers(
+                data=reviewers_data,
+                total=total,
+                limit=limit,
+                offset=offset
+            )
+        
+        # No domain filter - return global stats from Reviewer table with enriched metrics
         query = db.query(Reviewer)
         
         # Apply search filter (by username)
         if search:
             query = query.filter(Reviewer.username.ilike(f"%{search}%"))
-        
-        # Apply domain filter
-        if domain:
-            # Filter reviewers who have reviewed PRs in this domain
-            # Get reviewer usernames from Review table joined with PRs in this domain
-            from sqlalchemy import distinct
-            review_subquery = db.query(distinct(Review.reviewer_login)).join(
-                PullRequest, Review.pull_request_id == PullRequest.id
-            ).filter(
-                PullRequest.domain == domain
-            )
-            reviewer_usernames = [username[0] for username in review_subquery.all() if username[0]]
-            if reviewer_usernames:
-                query = query.filter(Reviewer.username.in_(reviewer_usernames))
-        
         # Get total count after filters
         total = query.count()
         
@@ -447,28 +597,52 @@ def get_reviewer_metrics(
         # Apply pagination
         reviewers = query.offset(offset).limit(limit).all()
         
-        # Build reviewer metrics with emails and roles from developer_hierarchy
-        reviewer_metrics = []
-        for rev in reviewers:
-            # Get email and role by matching username with github_user from developer_hierarchy
-            email, role = get_reviewer_info(rev.username, db)
+        # Enrich reviewer data with domains, recent reviews, email and role
+        enriched_reviewers = []
+        for reviewer in reviewers:
+            # Get email and role from developer_hierarchy
+            email, role = get_reviewer_info(reviewer.username, db)
             
-            # Convert to dict, add email and role, then create ReviewerMetrics
-            rev_dict = {
-                'id': rev.id,
-                'username': rev.username,
+            reviewer_dict = {
+                'id': reviewer.id,
+                'username': reviewer.username,
                 'email': email,
                 'role': role,
-                'total_reviews': rev.total_reviews,
-                'approved_reviews': rev.approved_reviews,
-                'changes_requested': rev.changes_requested,
-                'last_updated': rev.last_updated,
-                'metrics': rev.metrics
+                'total_reviews': reviewer.total_reviews,
+                'approved_reviews': reviewer.approved_reviews,
+                'changes_requested': reviewer.changes_requested,
+                'last_updated': reviewer.last_updated,
+                'metrics': reviewer.metrics or {}
             }
-            reviewer_metrics.append(ReviewerMetrics(**rev_dict))
+            
+            # Add domains this reviewer has worked on
+            rev_domains_query = db.query(PullRequest.domain).join(
+                Review, Review.pull_request_id == PullRequest.id
+            ).filter(
+                Review.reviewer_login == reviewer.username
+            ).distinct()
+            reviewer_dict['metrics']['domains'] = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+            
+            # Add recent reviews
+            recent_reviews = db.query(Review).join(
+                PullRequest, Review.pull_request_id == PullRequest.id
+            ).filter(
+                Review.reviewer_login == reviewer.username
+            ).order_by(Review.submitted_at.desc()).limit(5).all()
+            
+            reviewer_dict['metrics']['recent_reviews'] = [
+                {
+                    'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
+                    'state': review.state,
+                    'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
+                }
+                for review in recent_reviews
+            ]
+            
+            enriched_reviewers.append(reviewer_dict)
         
         return PaginatedReviewers(
-            data=reviewer_metrics,
+            data=enriched_reviewers,
             total=total,
             limit=limit,
             offset=offset
@@ -498,12 +672,25 @@ def get_statuses_list(db: Session = Depends(get_db)):
 
 @app.get("/api/domains", response_model=List[DomainMetricsResponse])
 def get_domain_metrics(db: Session = Depends(get_db)):
-    """Get metrics for allowed domains only."""
+    """Get metrics for allowed domains only, sorted by GitHub creation date (newest first)."""
+    from database import Domain
     try:
-        # Filter to show only allowed domains from config
+        # Get domains with GitHub creation dates for sorting
+        domain_order = db.query(Domain).filter(
+            Domain.domain_name.in_(settings.allowed_domains),
+            Domain.is_active == True
+        ).order_by(Domain.github_created_at.desc().nullslast()).all()
+        
+        # Create ordering map
+        domain_order_map = {d.domain_name: idx for idx, d in enumerate(domain_order)}
+        
+        # Get domain metrics
         domains = db.query(DomainMetrics).filter(
             DomainMetrics.domain.in_(settings.allowed_domains)
-        ).order_by(DomainMetrics.total_tasks.desc()).all()
+        ).all()
+        
+        # Sort by GitHub creation date using the order map
+        domains.sort(key=lambda x: domain_order_map.get(x.domain, 999))
         return [DomainMetricsResponse.from_orm(dom) for dom in domains]
     except Exception as e:
         logger.error(f"Error getting domain metrics: {str(e)}")
@@ -511,23 +698,36 @@ def get_domain_metrics(db: Session = Depends(get_db)):
 
 @app.get("/api/domains/list")
 def get_domains_list(db: Session = Depends(get_db)):
-    """Get list of allowed domains with IDs."""
+    """Get list of all allowed domains with IDs (includes domains without PRs)."""
     from database import Domain
     try:
-        # Filter to show only allowed domains from config
-        domains = db.query(Domain).filter(
-            Domain.domain_name.in_(settings.allowed_domains)
-        ).order_by(Domain.domain_name).all()
+        # Get all domains from DB that are in allowed list
+        db_domains = db.query(Domain).filter(
+            Domain.domain_name.in_(settings.allowed_domains),
+            Domain.is_active == True
+        ).order_by(Domain.github_created_at.desc().nullslast(), Domain.domain_name).all()
         
-        return {
-            'domains': [
-                {
+        # Create a map of existing domains
+        db_domain_map = {d.domain_name: d for d in db_domains}
+        
+        # Build result list - include ALL allowed domains (even if not in DB yet)
+        result = []
+        for domain_name in settings.allowed_domains:
+            if domain_name in db_domain_map:
+                domain = db_domain_map[domain_name]
+                result.append({
                     'id': domain.id,
                     'name': domain.domain_name
-                }
-                for domain in domains
-            ]
-        }
+                })
+            else:
+                # Domain exists in config but not in DB yet (no PRs)
+                # Create a temporary entry (will be created properly on next domain sync)
+                result.append({
+                    'id': 0,  # Placeholder ID
+                    'name': domain_name
+                })
+        
+        return {'domains': result}
     except Exception as e:
         logger.error(f"Error getting domains list: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -553,18 +753,26 @@ def get_current_domains_config():
 @app.post("/api/domains/config/refresh")
 def refresh_domains_config():
     """Manually trigger domain refresh from GitHub."""
-    from config import settings
+    from config import update_allowed_domains, settings
     
     try:
         logger.info("Manual domain refresh triggered via API")
+        success = update_allowed_domains(force=True)
         
-        # Return current domain configuration
-        return {
-            'status': 'success',
-            'message': 'Domain configuration retrieved',
-            'allowed_domains': sorted(settings.allowed_domains),
-            'count': len(settings.allowed_domains)
-        }
+        if success:
+            return {
+                'status': 'success',
+                'message': 'Domains refreshed successfully',
+                'allowed_domains': sorted(settings.allowed_domains),
+                'count': len(settings.allowed_domains)
+            }
+        else:
+            return {
+                'status': 'error',
+                'message': 'Failed to refresh domains from GitHub',
+                'allowed_domains': sorted(settings.allowed_domains),
+                'count': len(settings.allowed_domains)
+            }
     except Exception as e:
         logger.error(f"Error refreshing domains via API: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -472,6 +472,30 @@ def add_new_pr_columns():
         logger.error(f"❌ Error adding new columns: {e}")
         return False
 
+def add_github_created_at_to_domains():
+    """
+    Add github_created_at column to domains table to track when domain was created on GitHub
+    """
+    try:
+        logger.info("Checking for github_created_at column in domains...")
+        
+        if not column_exists('domains', 'github_created_at'):
+            logger.info("Adding github_created_at column to domains...")
+            with engine.connect() as connection:
+                connection.execute(text(
+                    "ALTER TABLE domains ADD COLUMN github_created_at TIMESTAMPTZ"
+                ))
+                connection.commit()
+                logger.info("✓ Added github_created_at column")
+        else:
+            logger.info("✓ github_created_at column already exists")
+            
+        logger.info("✅ domains table updated with GitHub metadata")
+        
+    except Exception as e:
+        logger.error(f"Error adding github_created_at column: {str(e)}")
+        raise
+
 def run_migrations():
     """
     Run all database migrations
@@ -502,6 +526,9 @@ def run_migrations():
     
     # Add missing users table columns
     add_users_table_columns()
+    
+    # Add github_created_at to domains table
+    add_github_created_at_to_domains()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info("✓ DeveloperHierarchy table managed by SQLAlchemy ORM")

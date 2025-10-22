@@ -1,20 +1,32 @@
-.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-reset generate-secret
+.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone generate-secret
 
 # Default target
 help:
 	@echo "TAU Dashboard - Local Development Commands"
 	@echo "=========================================="
-	@echo "make setup          - Initial setup (install dependencies)"
-	@echo "make install        - Install all dependencies"
-	@echo "make start-backend  - Start backend server"
-	@echo "make start-frontend - Start frontend dev server"
-	@echo "make start          - Start both backend and frontend (in separate terminals)"
-	@echo "make test           - Run tests"
-	@echo "make sync           - Trigger manual GitHub sync"
-	@echo "make db-init        - Initialize database"
-	@echo "make db-reset       - Reset database"
-	@echo "make generate-secret - Generate a secure SECRET_KEY"
-	@echo "make clean          - Clean up generated files"
+	@echo ""
+	@echo "Setup & Installation:"
+	@echo "  make setup          - Initial setup (install dependencies)"
+	@echo "  make install        - Install all dependencies"
+	@echo ""
+	@echo "Running the Application:"
+	@echo "  make start-backend  - Start backend server"
+	@echo "  make start-frontend - Start frontend dev server"
+	@echo "  make start          - Start both (in separate terminals)"
+	@echo ""
+	@echo "Database Management:"
+	@echo "  make db-setup       - Setup database (create DB + tables, one command)"
+	@echo "  make db-migrate     - Run database migration (create tables)"
+	@echo "  make db-test        - Test migration on test database"
+	@echo "  make db-status      - Show database status"
+	@echo "  make db-reset       - Reset database (DANGER: deletes all data)"
+	@echo "  make db-init        - Initialize database (legacy, use db-migrate)"
+	@echo ""
+	@echo "Other Commands:"
+	@echo "  make test           - Run tests"
+	@echo "  make sync           - Trigger manual GitHub sync"
+	@echo "  make generate-secret - Generate a secure SECRET_KEY"
+	@echo "  make clean          - Clean up generated files"
 
 # Initial setup
 setup: install
@@ -26,7 +38,7 @@ setup: install
 	@echo "3. Configure environment:"
 	@echo "   - Backend:  Edit backend/.env.dev and add your GITHUB_TOKEN"
 	@echo "   - Frontend: Edit frontend/.env.dev if you need custom ports"
-	@echo "   - Default: Backend on port 8000, Frontend on port 3000"
+	@echo "   - Default: Backend on port 4000, Frontend on port 1000"
 	@echo "4. Run 'make start-backend' in one terminal"
 	@echo "5. Run 'make start-frontend' in another terminal"
 
@@ -49,8 +61,8 @@ start-backend:
 	@echo "🚀 Starting backend server..."
 	@echo "Creating backend .env symlink if needed..."
 	@cd backend && [ -f .env ] || ln -s .env.dev .env
-	@echo "Starting backend (check backend/.env.dev for port configuration)..."
-	cd backend && uvicorn main:app --reload
+	@echo "Starting backend on port 4000..."
+	cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 4000
 
 # Start frontend dev server
 start-frontend:
@@ -76,16 +88,42 @@ sync:
 	@echo "🔄 Triggering GitHub sync..."
 	curl -X POST http://localhost:8000/api/sync
 
-# Initialize database
+# Setup database (create database + tables in one command)
+db-setup:
+	@echo "🗄️  Setting up database (will create if needed)..."
+	cd backend && python migrate_db.py --create-db
+
+# Run database migration (create tables)
+db-migrate:
+	@echo "🗄️  Running database migration..."
+	cd backend && python migrate_db.py
+
+# Test migration on test database (safe)
+db-test:
+	@echo "🧪 Testing migration on test database..."
+	cd backend && bash test_migration.sh
+
+# Show database status
+db-status:
+	@echo "📊 Database Status:"
+	@echo ""
+	@cd backend && python -c "from database import SessionLocal; from sqlalchemy import inspect; db = SessionLocal(); inspector = inspect(db.bind); tables = inspector.get_table_names(); print(f'Tables: {len(tables)}'); print(''); [print(f'  - {t}') for t in sorted(tables)]; db.close()"
+
+# Initialize database (legacy - use db-migrate instead)
 db-init:
-	@echo "🗄️  Initializing database..."
+	@echo "🗄️  Initializing database (legacy method)..."
+	@echo "⚠️  Consider using 'make db-migrate' instead"
 	cd backend && python -c "from database import init_db; init_db()"
 
-# Reset database
+# Reset database (DANGER: deletes all data)
 db-reset:
-	@echo "⚠️  Resetting database..."
+	@echo "⚠️  WARNING: This will DELETE ALL DATA!"
+	@echo "Press Ctrl+C to cancel, or Enter to continue..."
+	@read dummy
+	@echo "Resetting database..."
 	psql -U postgres -d tau_dashboard -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" || echo "Make sure PostgreSQL is running"
-	make db-init
+	@echo "Recreating tables..."
+	make db-migrate
 
 # Generate secure secret key
 generate-secret:

@@ -42,7 +42,13 @@ This will install both backend and frontend dependencies.
 
 ### 3. Set Up PostgreSQL Database
 
-Create the database:
+**Option A: Automatic (Recommended for new setup)**
+
+The migration script can create the database for you automatically. Skip to Step 5 and use `make db-setup`.
+
+**Option B: Manual**
+
+Create the database manually:
 
 ```bash
 createdb tau_dashboard
@@ -82,8 +88,8 @@ nano backend/.env.dev
 ```env
 # Backend Server Configuration
 BACKEND_HOST=0.0.0.0
-BACKEND_PORT=8000
-FRONTEND_URL=http://localhost:3000
+BACKEND_PORT=4000
+FRONTEND_URL=http://localhost:1000
 
 # GitHub Configuration
 GITHUB_TOKEN=ghp_your_github_token_here
@@ -108,20 +114,20 @@ nano frontend/.env.dev
 
 ```env
 # Frontend Server Configuration
-VITE_FRONTEND_PORT=3000
-VITE_BACKEND_URL=http://localhost:8000
+VITE_FRONTEND_PORT=1000
+VITE_BACKEND_URL=http://localhost:4000
 
 # API Configuration
 VITE_API_BASE_URL=/api
-VITE_WS_URL=ws://localhost:8000/ws
+VITE_WS_URL=ws://localhost:4000/ws
 ```
 
 **Configuration Options:**
 
 **Backend:**
 - `BACKEND_HOST` - Host to bind backend server (default: 0.0.0.0)
-- `BACKEND_PORT` - Backend port (default: 8000)
-- `FRONTEND_URL` - Frontend URL for CORS (default: http://localhost:3000)
+- `BACKEND_PORT` - Backend port (default: 4000)
+- `FRONTEND_URL` - Frontend URL for CORS (default: http://localhost:1000)
 - `DB_HOST` - Database hostname
 - `DB_PORT` - Database port (default: 5432)
 - `DB_USER` - Database username
@@ -130,8 +136,8 @@ VITE_WS_URL=ws://localhost:8000/ws
 - `SECRET_KEY` - Security key (generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"`)
 
 **Frontend:**
-- `VITE_FRONTEND_PORT` - Frontend dev server port (default: 3000)
-- `VITE_BACKEND_URL` - Backend API URL (default: http://localhost:8000)
+- `VITE_FRONTEND_PORT` - Frontend dev server port (default: 1000)
+- `VITE_BACKEND_URL` - Backend API URL (default: http://localhost:4000)
 
 **Get your GitHub token:**
 1. Go to GitHub Settings → Developer settings → Personal access tokens
@@ -149,8 +155,33 @@ cd frontend && ln -sf .env.production .env && cd ..
 
 ### 5. Initialize Database
 
+**Option A: Automatic Setup (Recommended for new installations)**
 ```bash
+# Creates database (if needed) + all tables in one command
+make db-setup
+```
+
+This will:
+- Check if the database exists
+- Create it if it doesn't exist (prompts for confirmation)
+- Create all tables from the schema
+
+**Option B: Manual Setup (if database already exists)**
+```bash
+# Run database migration to create tables only
+make db-migrate
+```
+
+**Option C: Legacy Method**
+```bash
+# Tables will be created automatically on server startup
 make db-init
+```
+
+**Testing Migration (Safe)**
+```bash
+# Test on separate database before applying to production
+make db-test
 ```
 
 ### 6. Start the Application
@@ -169,9 +200,9 @@ make start-frontend
 
 ### 7. Access the Dashboard
 
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
+- **Frontend**: http://localhost:1000
+- **Backend API**: http://localhost:4000
+- **API Docs**: http://localhost:4000/docs
 
 ## Development
 
@@ -242,7 +273,11 @@ make start-backend  # Start backend server
 make start-frontend # Start frontend dev server
 make test           # Run tests
 make sync           # Trigger GitHub sync
-make db-init        # Initialize database
+make db-setup       # Setup database (create DB + tables)
+make db-migrate     # Run database migration
+make db-test        # Test migration on test database
+make db-status      # Show database status
+make db-init        # Initialize database (legacy)
 make db-reset       # Reset database
 make clean          # Clean up generated files
 ```
@@ -258,11 +293,35 @@ make clean          # Clean up generated files
 - `POST /api/sync` - Trigger manual GitHub sync
 - `WS /ws` - WebSocket for real-time updates
 
-Full API documentation: http://localhost:8000/docs
+Full API documentation: http://localhost:4000/docs
 
 ## Database Management
 
-### Initialize Database
+### Setup Database (First Time)
+```bash
+# Creates database (if needed) and all tables
+make db-setup
+```
+
+### Run Migration (Existing Database)
+```bash
+# Creates tables only (database must exist)
+make db-migrate
+```
+
+### Test Migration (Safe)
+```bash
+# Test on separate test database
+make db-test
+```
+
+### Check Database Status
+```bash
+# Show tables and row counts
+make db-status
+```
+
+### Initialize Database (Legacy)
 ```bash
 make db-init
 ```
@@ -285,9 +344,9 @@ psql -U postgres -d tau_dashboard
 - Verify credentials in `.env` file
 
 ### Port Already in Use
-- Backend (8000): Check if another app is using port 8000
-- Frontend (3000): Check if another app is using port 3000
-- Use `lsof -i :8000` or `lsof -i :3000` to find the process
+- Backend (4000): Check if another app is using port 4000
+- Frontend (1000): Check if another app is using port 1000
+- Use `lsof -i :4000` or `lsof -i :1000` to find the process
 
 ### GitHub API Rate Limiting
 - Make sure you're using a valid GitHub token
@@ -297,6 +356,164 @@ psql -U postgres -d tau_dashboard
 ### Module Not Found Errors
 - Backend: Make sure you're in the virtual environment
 - Frontend: Try deleting `node_modules` and running `npm install` again
+
+## Production Deployment
+
+### Server Setup (104.198.177.87)
+
+The application runs on ports:
+- **Backend**: 4000
+- **Frontend**: 1000
+
+#### 1. Install Prerequisites on Server
+
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install PostgreSQL
+sudo apt install postgresql postgresql-contrib -y
+
+# Install Python and pip
+sudo apt install python3 python3-pip python3-venv -y
+
+# Install Node.js 18+
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Install PM2 for process management
+sudo npm install -g pm2
+```
+
+#### 2. Setup PostgreSQL Database
+
+```bash
+# Switch to postgres user
+sudo -u postgres psql
+
+# Create database and user
+CREATE DATABASE tau_dashboard;
+CREATE USER postgres WITH PASSWORD 'postgres';
+GRANT ALL PRIVILEGES ON DATABASE tau_dashboard TO postgres;
+ALTER USER postgres WITH SUPERUSER;
+\q
+```
+
+#### 3. Deploy Application
+
+```bash
+# Clone repository
+cd ~
+git clone <your-repo-url> tau-dashboard
+cd tau-dashboard
+
+# Backend setup
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.production .env
+python migrate_db.py --create-db --force
+
+# Frontend setup
+cd ../frontend
+npm install
+cp .env.production .env
+npm run build
+```
+
+#### 4. Start Services with PM2
+
+```bash
+# Start backend on port 4000
+cd ~/tau-dashboard/backend
+pm2 start "uvicorn main:app --host 0.0.0.0 --port 4000" --name tau-backend
+
+# Install serve for frontend
+npm install -g serve
+
+# Start frontend on port 1000
+cd ~/tau-dashboard/frontend
+pm2 start "serve -s dist -l 1000" --name tau-frontend
+
+# Save PM2 configuration
+pm2 save
+
+# Setup PM2 to start on boot
+pm2 startup
+```
+
+#### 5. Configure Firewall
+
+```bash
+sudo ufw allow 1000/tcp
+sudo ufw allow 4000/tcp
+sudo ufw allow 22/tcp
+sudo ufw enable
+```
+
+#### 6. Access Application
+
+- Frontend: http://104.198.177.87:1000
+- Backend API: http://104.198.177.87:4000
+- API Docs: http://104.198.177.87:4000/docs
+
+### PM2 Management Commands
+
+```bash
+# View all services
+pm2 status
+
+# View logs
+pm2 logs
+
+# Restart services
+pm2 restart all
+
+# Stop services
+pm2 stop all
+
+# Start specific service
+pm2 start tau-backend
+pm2 start tau-frontend
+```
+
+### Update Deployment
+
+```bash
+# Pull latest code
+cd ~/tau-dashboard
+git pull
+
+# Update backend
+cd backend
+source venv/bin/activate
+pip install -r requirements.txt
+pm2 restart tau-backend
+
+# Update frontend
+cd ../frontend
+npm install
+npm run build
+pm2 restart tau-frontend
+```
+
+### Deployment Troubleshooting
+
+```bash
+# Check if ports are in use
+sudo lsof -i :4000
+sudo lsof -i :1000
+
+# Check database connection
+psql -U postgres -d tau_dashboard -c "SELECT COUNT(*) FROM pull_requests;"
+
+# View PM2 logs
+pm2 logs --lines 100
+
+# Check service status
+pm2 status
+```
 
 ## Contributing
 
