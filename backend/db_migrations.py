@@ -223,6 +223,32 @@ def add_reviews_reviewer_id():
         logger.error(f"❌ Error adding reviewer_id to reviews: {e}")
         return False
 
+def add_developer_closed_prs():
+    """
+    Add closed_prs column to developers table
+    """
+    try:
+        logger.info("Checking for closed_prs column in developers table...")
+        
+        with engine.connect() as connection:
+            if not column_exists('developers', 'closed_prs'):
+                logger.info("Adding closed_prs column to developers...")
+                connection.execute(text(
+                    "ALTER TABLE developers ADD COLUMN closed_prs INTEGER DEFAULT 0"
+                ))
+                
+                connection.commit()
+                logger.info("✓ Added closed_prs column")
+            else:
+                logger.info("✓ Column developers.closed_prs already exists")
+        
+        logger.info("✅ developers table updated successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding closed_prs to developers: {e}")
+        return False
+
 def add_sync_state_columns():
     """
     Add new tracking columns to sync_state table
@@ -478,6 +504,41 @@ def add_new_pr_columns():
         logger.error(f"❌ Error adding new columns: {e}")
         return False
 
+def add_reviewer_comment_columns():
+    """Add commented_reviews and dismissed_reviews columns to reviewers table."""
+    logger.info("Checking for commented_reviews and dismissed_reviews columns in reviewers table...")
+    
+    try:
+        # Get db connection using engine directly
+        from database import engine
+        with engine.connect() as conn:
+            # Check if columns exist
+            result = conn.execute(text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'reviewers' 
+                AND column_name IN ('commented_reviews', 'dismissed_reviews')
+            """))
+            existing_columns = {row[0] for row in result.fetchall()}
+            
+            if 'commented_reviews' not in existing_columns:
+                conn.execute(text("ALTER TABLE reviewers ADD COLUMN commented_reviews INTEGER DEFAULT 0"))
+                conn.commit()
+                logger.info("✓ Added commented_reviews column")
+            else:
+                logger.info("✓ commented_reviews column already exists")
+                
+            if 'dismissed_reviews' not in existing_columns:
+                conn.execute(text("ALTER TABLE reviewers ADD COLUMN dismissed_reviews INTEGER DEFAULT 0"))
+                conn.commit()
+                logger.info("✓ Added dismissed_reviews column")
+            else:
+                logger.info("✓ dismissed_reviews column already exists")
+        
+        logger.info("✅ reviewers table updated successfully")
+    except Exception as e:
+        logger.error(f"Error adding reviewer columns: {e}")
+
 def run_migrations():
     """
     Run all database migrations
@@ -511,6 +572,12 @@ def run_migrations():
     
     # Add reviewer_id to reviews table
     add_reviews_reviewer_id()
+    
+    # Add closed_prs to developers table
+    add_developer_closed_prs()
+    
+    # Add commented_reviews and dismissed_reviews to reviewers table
+    add_reviewer_comment_columns()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info("✓ DeveloperHierarchy table managed by SQLAlchemy ORM")

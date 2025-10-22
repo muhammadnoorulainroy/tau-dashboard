@@ -22,9 +22,10 @@ class GitHubService:
         # Pattern to match PRs: {trainer_name}-{domain}-{interface_num}-{complexity_level}-{timestamp}
         # Example: haseeb-fund_finance-3-expert-1760428727
         # NOTE: Made trainer name non-greedy to avoid consuming domain parts
-        self.pr_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})$')
+        # NOTE: Using IGNORECASE flag to handle both "Medium"/"Hard" and "medium"/"hard"
+        self.pr_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})$', re.IGNORECASE)
         # Pattern for task files (same format, but may have .json extension)
-        self.task_file_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})(?:\.json)?$')
+        self.task_file_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})(?:\.json)?$', re.IGNORECASE)
         # Pattern to extract week and pod from file paths: week_12/bandreddy_pod/task_name/...
         self.week_pod_pattern = re.compile(r'^week_(\d+)/([^/]+)/')
         
@@ -630,6 +631,7 @@ class GitHubService:
             dev.total_prs = len(prs)
             dev.open_prs = sum(1 for pr in prs if pr.state == 'open')
             dev.merged_prs = sum(1 for pr in prs if pr.merged)
+            dev.closed_prs = sum(1 for pr in prs if pr.state == 'closed' and not pr.merged)
             dev.total_rework = sum(pr.rework_count for pr in prs)
             dev.total_check_failures = sum(pr.check_failures for pr in prs)
             

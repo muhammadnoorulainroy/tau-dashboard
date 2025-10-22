@@ -40,22 +40,6 @@ const DeveloperView = ({ lastUpdate }) => {
   }, [searchTerm]);
 
   useEffect(() => {
-    fetchDomains();
-  }, []);
-
-  // Debounce search term
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearchTerm(searchTerm);
-    }, 300); // Wait 300ms after user stops typing
-
-    return () => clearTimeout(timer);
-  }, [searchTerm]);
-
-  useEffect(() => {
-    // Clear current data immediately when filters change to prevent showing stale data
-    setDevelopers([]);
-    setTotal(0);
     fetchDevelopers();
   }, [lastUpdate, sortBy, debouncedSearchTerm, selectedDomain]);
 
@@ -174,14 +158,14 @@ const DeveloperView = ({ lastUpdate }) => {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-56">
                   Developer
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-52">
                   Email
                 </th>
                 <th 
-                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-32"
                   onClick={() => handleSort('total_prs')}
                 >
                   <div className="flex items-center justify-center">
@@ -192,7 +176,7 @@ const DeveloperView = ({ lastUpdate }) => {
                   </div>
                 </th>
                 <th 
-                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-28"
                   onClick={() => handleSort('open_prs')}
                 >
                   <div className="flex items-center justify-center">
@@ -203,7 +187,7 @@ const DeveloperView = ({ lastUpdate }) => {
                   </div>
                 </th>
                 <th 
-                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-32"
                   onClick={() => handleSort('merged_prs')}
                 >
                   <div className="flex items-center justify-center">
@@ -214,7 +198,18 @@ const DeveloperView = ({ lastUpdate }) => {
                   </div>
                 </th>
                 <th 
-                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-32"
+                  onClick={() => handleSort('closed_prs')}
+                >
+                  <div className="flex items-center justify-center">
+                    Closed PRs
+                    {sortBy === 'closed_prs' && (
+                      sortOrder === 'desc' ? <ChevronDownIcon className="h-4 w-4 ml-1" /> : <ChevronUpIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
+                </th>
+                <th 
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-32"
                   onClick={() => handleSort('total_rework')}
                 >
                   <div className="flex items-center justify-center">
@@ -275,6 +270,11 @@ const DeveloperView = ({ lastUpdate }) => {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                        {dev.closed_prs || 0}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                         dev.total_rework > 5 ? 'bg-danger-100 text-danger-800' : 'bg-gray-100 text-gray-800'
                       }`}>
@@ -289,10 +289,7 @@ const DeveloperView = ({ lastUpdate }) => {
                           </span>
                         ))}
                         {dev.metrics?.domains && Array.isArray(dev.metrics.domains) && dev.metrics.domains.length > 3 && (
-                          <span 
-                            className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 cursor-help"
-                            title={dev.metrics.domains.slice(3).join(', ')}
-                          >
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
                             +{dev.metrics.domains.length - 3}
                           </span>
                         )}
