@@ -1,4 +1,4 @@
-.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone generate-secret
+.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone db-backfill-weeks generate-secret
 
 # Default target
 help:
@@ -15,12 +15,13 @@ help:
 	@echo "  make start          - Start both (in separate terminals)"
 	@echo ""
 	@echo "Database Management:"
-	@echo "  make db-setup       - Setup database (create DB + tables, one command)"
-	@echo "  make db-migrate     - Run database migration (create tables)"
-	@echo "  make db-test        - Test migration on test database"
-	@echo "  make db-status      - Show database status"
-	@echo "  make db-reset       - Reset database (DANGER: deletes all data)"
-	@echo "  make db-init        - Initialize database (legacy, use db-migrate)"
+	@echo "  make db-setup            - Setup database (create DB + tables, one command)"
+	@echo "  make db-migrate          - Run database migration (create tables)"
+	@echo "  make db-test             - Test migration on test database"
+	@echo "  make db-status           - Show database status"
+	@echo "  make db-backfill-weeks   - Backfill week/pod data for existing PRs"
+	@echo "  make db-reset            - Reset database (DANGER: deletes all data)"
+	@echo "  make db-init             - Initialize database (legacy, use db-migrate)"
 	@echo ""
 	@echo "Other Commands:"
 	@echo "  make test           - Run tests"
@@ -124,6 +125,17 @@ db-reset:
 	psql -U postgres -d tau_dashboard -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" || echo "Make sure PostgreSQL is running"
 	@echo "Recreating tables..."
 	make db-migrate
+
+# Backfill week/pod data for existing PRs
+db-backfill-weeks:
+	@echo "🔄 Backfilling week and pod data for existing PRs..."
+	@echo "This will update PRs that have NULL week_id by parsing their file paths."
+	@echo ""
+	@echo "Options:"
+	@echo "  To preview changes: cd backend && python backfill_week_pod.py --dry-run"
+	@echo "  To limit PRs:       cd backend && python backfill_week_pod.py --limit 10"
+	@echo ""
+	cd backend && python backfill_week_pod.py
 
 # Generate secure secret key
 generate-secret:

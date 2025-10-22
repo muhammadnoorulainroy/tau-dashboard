@@ -122,76 +122,79 @@ const PullRequestsView = ({ lastUpdate }) => {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-bold text-gray-900">Pull Requests</h2>
-        <div className="flex items-center space-x-2">
-          <span className="text-sm text-gray-500">
-            Showing {filteredPRs.length} PRs
-          </span>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="card">
-        <div className="flex flex-wrap gap-4">
-          <div className="flex-1 min-w-[200px]">
-            <div className="relative">
-              <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search PRs..."
-                value={filters.search}
-                onChange={(e) => handleFilterChange('search', e.target.value)}
-                className="pl-10 pr-3 py-2 border border-gray-300 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-primary-500"
-              />
-            </div>
+    <div className="flex flex-col h-full">
+      {/* Fixed Header */}
+      <div className="flex-shrink-0 space-y-4 mb-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-3xl font-bold text-gray-900">Pull Requests</h2>
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-500">
+              Showing {filteredPRs.length} PRs
+            </span>
           </div>
-          
-          <select
-            value={filters.state}
-            onChange={(e) => handleFilterChange('state', e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
-          >
-            <option value="">All States</option>
-            <option value="open">Open</option>
-            <option value="closed">Closed</option>
-            <option value="merged">Merged</option>
-          </select>
+        </div>
 
-          <select
-            value={filters.domain}
-            onChange={(e) => handleFilterChange('domain', e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
-          >
-            <option value="">All Domains</option>
-            {domains.map(domain => (
-              <option key={domain} value={domain}>{domain}</option>
-            ))}
-          </select>
+        {/* Filters */}
+        <div className="card">
+          <div className="flex flex-wrap gap-4">
+            <div className="flex-1 min-w-[200px]">
+              <div className="relative">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search PRs..."
+                  value={filters.search}
+                  onChange={(e) => handleFilterChange('search', e.target.value)}
+                  className="pl-10 pr-3 py-2 border border-gray-300 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+            </div>
+            
+            <select
+              value={filters.state}
+              onChange={(e) => handleFilterChange('state', e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+            >
+              <option value="">All States</option>
+              <option value="open">Open</option>
+              <option value="closed">Closed</option>
+              <option value="merged">Merged</option>
+            </select>
 
-          <input
-            type="text"
-            placeholder="Developer username..."
-            value={filters.developer}
-            onChange={(e) => handleFilterChange('developer', e.target.value)}
-            className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
-          />
+            <select
+              value={filters.domain}
+              onChange={(e) => handleFilterChange('domain', e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+            >
+              <option value="">All Domains</option>
+              {domains.map(domain => (
+                <option key={domain} value={domain}>{domain}</option>
+              ))}
+            </select>
 
-          <button
-            onClick={() => setFilters({ state: '', domain: '', developer: '', search: '' })}
-            className="px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md"
-          >
-            Clear Filters
-          </button>
+            <input
+              type="text"
+              placeholder="Developer username..."
+              value={filters.developer}
+              onChange={(e) => handleFilterChange('developer', e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
+            />
+
+            <button
+              onClick={() => setFilters({ state: '', domain: '', developer: '', search: '' })}
+              className="px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md"
+            >
+              Clear Filters
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* PRs List */}
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
+      {/* Scrollable Table Container */}
+      <div className="flex-1 card overflow-hidden flex flex-col">
+        <div className="flex-1 overflow-auto">
           <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+            <thead className="bg-gray-50 sticky top-0 z-10">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   PR
@@ -279,8 +282,8 @@ const PullRequestsView = ({ lastUpdate }) => {
           </table>
         </div>
 
-        {/* Pagination */}
-        <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+        {/* Fixed Pagination */}
+        <div className="flex-shrink-0 px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <button
               onClick={() => handlePageChange('prev')}

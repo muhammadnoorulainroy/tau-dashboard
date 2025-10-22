@@ -81,12 +81,14 @@ class Review(Base):
     id = Column(Integer, primary_key=True, index=True)
     github_id = Column(BigInteger, unique=True, index=True)
     pull_request_id = Column(Integer, ForeignKey("pull_requests.id"))
+    reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     reviewer_login = Column(String, index=True)
     state = Column(String)  # APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
     submitted_at = Column(DateTime)
     body = Column(Text, nullable=True)
     
     pull_request = relationship("PullRequest", back_populates="reviews")
+    reviewer = relationship("User", foreign_keys=[reviewer_id])
     
     __table_args__ = (
         Index('idx_review_reviewer', 'reviewer_login'),

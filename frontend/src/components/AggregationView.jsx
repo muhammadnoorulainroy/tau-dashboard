@@ -151,7 +151,7 @@ const AggregationView = () => {
   const paginatedData = data.slice(startIndex, endIndex);
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col h-full">
       {/* Notification Modal */}
       {notification && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
@@ -195,24 +195,26 @@ const AggregationView = () => {
         </div>
       )}
       
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-800">Aggregation Metrics</h1>
-          <p className="text-gray-600 mt-1">Task metrics by Domain, Developer, POD Lead, and Calibrator</p>
+      {/* Fixed Header Section */}
+      <div className="flex-shrink-0 space-y-4 mb-4">
+        {/* Header */}
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800">Aggregation Metrics</h1>
+            <p className="text-gray-600 mt-1">Task metrics by Domain, Developer, POD Lead, and Calibrator</p>
+          </div>
+          <button
+            onClick={syncGoogleSheets}
+            disabled={syncing}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
+          >
+            <ArrowPathIcon className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Syncing...' : 'Sync Google Sheets'}
+          </button>
         </div>
-        <button
-          onClick={syncGoogleSheets}
-          disabled={syncing}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
-        >
-          <ArrowPathIcon className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-          {syncing ? 'Syncing...' : 'Sync Google Sheets'}
-        </button>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto">
+        {/* Tabs */}
+        <div className="flex gap-2 border-b border-gray-200 overflow-x-auto">
         {tabs.map((tab) => {
           const TabIcon = tab.icon;
           return (
@@ -290,15 +292,15 @@ const AggregationView = () => {
         </div>
       )}
 
-      {/* Error */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800">{error}</p>
-        </div>
-      )}
+        {/* Error */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-red-800">{error}</p>
+          </div>
+        )}
 
-      {/* Summary Statistics - Moved to Top */}
-      {data.length > 0 && (
+        {/* Summary Statistics - Moved to Top */}
+        {data.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div className="bg-white rounded-lg shadow p-4 border-l-4 border-gray-500">
             <div className="text-sm text-gray-600">Total Tasks</div>
@@ -331,11 +333,12 @@ const AggregationView = () => {
             </div>
           </div>
         </div>
-      )}
+        )}
+      </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
+      {/* Scrollable Table Container */}
+      <div className="flex-1 bg-white rounded-lg shadow overflow-hidden flex flex-col">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 flex-shrink-0">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
               {Icon && <Icon className="w-6 h-6" />}
@@ -367,9 +370,9 @@ const AggregationView = () => {
             <p>No data available</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="flex-1 overflow-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 border-b border-gray-200">
+              <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                     {activeTab === 'domains' ? 'Domain' : 
@@ -480,9 +483,9 @@ const AggregationView = () => {
           </div>
         )}
 
-        {/* Pagination */}
+        {/* Fixed Pagination */}
         {!loading && data.length > 0 && (
-          <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+          <div className="flex-shrink-0 px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
             <div className="flex items-center space-x-4">
               {/* Rows per page selector */}
               <div className="flex items-center space-x-2">

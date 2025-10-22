@@ -539,6 +539,50 @@ def add_reviewer_comment_columns():
     except Exception as e:
         logger.error(f"Error adding reviewer columns: {e}")
 
+def add_pr_review_comments_count():
+    """Add review_comments_count column to pull_requests table."""
+    logger.info("Checking for review_comments_count column in pull_requests table...")
+    
+    try:
+        if not column_exists('pull_requests', 'review_comments_count'):
+            logger.info("Adding review_comments_count column to pull_requests...")
+            with engine.connect() as connection:
+                connection.execute(text(
+                    "ALTER TABLE pull_requests ADD COLUMN review_comments_count INTEGER DEFAULT 0"
+                ))
+                connection.commit()
+                logger.info("✓ Added review_comments_count column")
+        else:
+            logger.info("✓ review_comments_count column already exists")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding review_comments_count column: {e}")
+        return False
+
+def add_domain_github_created_at():
+    """Add github_created_at column to domains table for sorting by creation date."""
+    logger.info("Checking for github_created_at column in domains table...")
+    
+    try:
+        if not column_exists('domains', 'github_created_at'):
+            logger.info("Adding github_created_at column to domains...")
+            with engine.connect() as connection:
+                connection.execute(text(
+                    "ALTER TABLE domains ADD COLUMN github_created_at TIMESTAMPTZ"
+                ))
+                connection.commit()
+                logger.info("✓ Added github_created_at column")
+        else:
+            logger.info("✓ github_created_at column already exists")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding github_created_at column: {e}")
+        return False
+
 def run_migrations():
     """
     Run all database migrations
@@ -578,6 +622,12 @@ def run_migrations():
     
     # Add commented_reviews and dismissed_reviews to reviewers table
     add_reviewer_comment_columns()
+    
+    # Add review_comments_count to pull_requests table
+    add_pr_review_comments_count()
+    
+    # Add github_created_at to domains table
+    add_domain_github_created_at()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info("✓ DeveloperHierarchy table managed by SQLAlchemy ORM")
