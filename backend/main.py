@@ -148,25 +148,19 @@ async def lifespan(app: FastAPI):
         logger.warning("Application will continue, but hierarchy data may be outdated")
         # Continue anyway to allow the app to start
     
-    # Update allowed domains from GitHub on startup
+    # Skip GitHub domain update on startup to avoid 403 rate limit issues
+    # Domains will be loaded from database or use fallback list
     try:
         logger.info("=" * 60)
-        logger.info("Updating allowed domains from GitHub repo...")
+        logger.info("Skipping GitHub domain update (using database/fallback)")
         logger.info("=" * 60)
         
-        from config import update_allowed_domains, settings
-        success = update_allowed_domains(force=True)
-        
-        if success:
-            logger.info(f"✅ Domains updated: {len(settings.allowed_domains)} domains discovered")
-            logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
-        else:
-            logger.warning(f"⚠️  Using fallback domain list: {len(settings.allowed_domains)} domains")
-        
+        from config import settings
+        logger.info(f"✅ Using {len(settings.allowed_domains)} domains from config/database")
+        logger.info(f"   Domains: {', '.join(settings.allowed_domains[:10])}...")
         logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"Failed to update domains from GitHub: {str(e)}")
-        logger.warning("Application will continue with fallback domain list")
+        logger.error(f"Error checking domains: {str(e)}")
         # Continue anyway to allow the app to start
     
     # Start background sync task
@@ -370,10 +364,14 @@ def get_developer_metrics(
                 # Calculate merge rate for this domain only
                 merge_rate = (result.merged_prs / result.total_prs * 100) if result.total_prs else 0
                 
+                # Get email from developer_hierarchy
+                email = get_developer_email(result.username, db)
+                
                 developers_data.append({
                     'id': 0,  # Placeholder ID for domain-filtered view
                     'username': result.username,
                     'github_login': result.username,
+                    'email': email,
                     'total_prs': result.total_prs or 0,
                     'open_prs': result.open_prs or 0,
                     'merged_prs': result.merged_prs or 0,
@@ -415,13 +413,17 @@ def get_developer_metrics(
         # Apply pagination
         developers = query.offset(offset).limit(limit).all()
         
-        # Enrich developer data with domains
+        # Enrich developer data with domains and emails
         enriched_developers = []
         for developer in developers:
+            # Get email from developer_hierarchy by matching github_login
+            email = get_developer_email(developer.github_login, db)
+            
             developer_dict = {
                 'id': developer.id,
                 'username': developer.username,
                 'github_login': developer.github_login,
+                'email': email,
                 'total_prs': developer.total_prs,
                 'open_prs': developer.open_prs,
                 'merged_prs': developer.merged_prs,

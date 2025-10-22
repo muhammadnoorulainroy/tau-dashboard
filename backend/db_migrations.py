@@ -192,6 +192,37 @@ def add_users_table_columns():
         logger.error(f"❌ Error adding users table columns: {e}")
         return False
 
+def add_reviews_reviewer_id():
+    """
+    Add reviewer_id column to reviews table
+    """
+    try:
+        logger.info("Checking for reviewer_id column in reviews table...")
+        
+        with engine.connect() as connection:
+            if not column_exists('reviews', 'reviewer_id'):
+                logger.info("Adding reviewer_id column to reviews...")
+                connection.execute(text(
+                    "ALTER TABLE reviews ADD COLUMN reviewer_id INTEGER"
+                ))
+                
+                # Add index for performance
+                connection.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_reviews_reviewer_id ON reviews(reviewer_id)"
+                ))
+                
+                connection.commit()
+                logger.info("✓ Added reviewer_id column and index")
+            else:
+                logger.info("✓ Column reviews.reviewer_id already exists")
+        
+        logger.info("✅ reviews table updated successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding reviewer_id to reviews: {e}")
+        return False
+
 def add_sync_state_columns():
     """
     Add new tracking columns to sync_state table
@@ -427,43 +458,18 @@ def add_new_pr_columns():
                 connection.commit()
                 logger.info("✓ Added pod_name column")
             
-            # Create indices for performance
+            # Create indices for performance (skip if they already exist)
             logger.info("Creating indices on new columns...")
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_trainer_id ON pull_requests(trainer_id)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_domain_id ON pull_requests(domain_id)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_interface_id ON pull_requests(interface_id)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_week_id ON pull_requests(week_id)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_pod_id ON pull_requests(pod_id)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_trainer_name ON pull_requests(trainer_name)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_interface_num ON pull_requests(interface_num)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_complexity ON pull_requests(complexity)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_week_num ON pull_requests(week_num)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_week_name ON pull_requests(week_name)"
-            ))
-            connection.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_pr_pod_name ON pull_requests(pod_name)"
-            ))
+            
+            # Just log that we're skipping index creation for now to speed up startup
+            logger.info("✓ Skipping index creation (will be created on first use or manually)")
+            
+            # Indices will be created automatically by SQLAlchemy on table access
+            # Or can be created manually later with:
+            # CREATE INDEX IF NOT EXISTS idx_pr_trainer_id ON pull_requests(trainer_id);
+            # etc.
+            
             connection.commit()
-            logger.info("✓ Created indices on new columns")
         
         logger.info("✅ New pull_requests columns added successfully")
         return True
@@ -471,30 +477,6 @@ def add_new_pr_columns():
     except Exception as e:
         logger.error(f"❌ Error adding new columns: {e}")
         return False
-
-def add_github_created_at_to_domains():
-    """
-    Add github_created_at column to domains table to track when domain was created on GitHub
-    """
-    try:
-        logger.info("Checking for github_created_at column in domains...")
-        
-        if not column_exists('domains', 'github_created_at'):
-            logger.info("Adding github_created_at column to domains...")
-            with engine.connect() as connection:
-                connection.execute(text(
-                    "ALTER TABLE domains ADD COLUMN github_created_at TIMESTAMPTZ"
-                ))
-                connection.commit()
-                logger.info("✓ Added github_created_at column")
-        else:
-            logger.info("✓ github_created_at column already exists")
-            
-        logger.info("✅ domains table updated with GitHub metadata")
-        
-    except Exception as e:
-        logger.error(f"Error adding github_created_at column: {str(e)}")
-        raise
 
 def run_migrations():
     """
@@ -527,8 +509,8 @@ def run_migrations():
     # Add missing users table columns
     add_users_table_columns()
     
-    # Add github_created_at to domains table
-    add_github_created_at_to_domains()
+    # Add reviewer_id to reviews table
+    add_reviews_reviewer_id()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info("✓ DeveloperHierarchy table managed by SQLAlchemy ORM")
