@@ -11,7 +11,7 @@ import logging
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState, DeveloperHierarchy, Review, CheckRun, InterfaceMetrics, Week, Pod
+from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState, DeveloperHierarchy, User, Domain, Interface, Week, Pod, Review, InterfaceMetrics
 from github_service import GitHubService
 from google_sheets_service import GoogleSheetsService
 from sync_state import should_do_full_sync, get_last_sync_time, get_sync_description
@@ -51,48 +51,6 @@ class ConnectionManager:
                 pass
 
 manager = ConnectionManager()
-
-# Helper function to get email from developer_hierarchy
-def get_developer_email(github_login: str, db: Session) -> Optional[str]:
-    """
-    Get developer email from developer_hierarchy table.
-    Matches github_login (author_login from PR) with github_user (case-insensitive).
-    Returns turing_email if found.
-    """
-    if not github_login:
-        return None
-    
-    try:
-        dev_hierarchy = db.query(DeveloperHierarchy).filter(
-            func.lower(DeveloperHierarchy.github_user) == github_login.lower()
-        ).first()
-        
-        return dev_hierarchy.turing_email if dev_hierarchy else None
-    except Exception as e:
-        logger.debug(f"Could not fetch email for {github_login}: {e}")
-        return None
-
-# Helper function to get email and role from developer_hierarchy
-def get_reviewer_info(github_username: str, db: Session) -> tuple[Optional[str], Optional[str]]:
-    """
-    Get reviewer email and role from developer_hierarchy table.
-    Matches github_username with github_user (case-insensitive).
-    Returns (turing_email, role) if found.
-    """
-    if not github_username:
-        return None, None
-    
-    try:
-        dev_hierarchy = db.query(DeveloperHierarchy).filter(
-            func.lower(DeveloperHierarchy.github_user) == github_username.lower()
-        ).first()
-        
-        if dev_hierarchy:
-            return dev_hierarchy.turing_email, dev_hierarchy.role
-        return None, None
-    except Exception as e:
-        logger.debug(f"Could not fetch info for {github_username}: {e}")
-        return None, None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -148,19 +106,25 @@ async def lifespan(app: FastAPI):
         logger.warning("Application will continue, but hierarchy data may be outdated")
         # Continue anyway to allow the app to start
     
-    # Skip GitHub domain update on startup to avoid 403 rate limit issues
-    # Domains will be loaded from database or use fallback list
+    # Update allowed domains from GitHub on startup
     try:
         logger.info("=" * 60)
-        logger.info("Skipping GitHub domain update (using database/fallback)")
+        logger.info("Updating allowed domains from GitHub repo...")
         logger.info("=" * 60)
         
-        from config import settings
-        logger.info(f"✅ Using {len(settings.allowed_domains)} domains from config/database")
-        logger.info(f"   Domains: {', '.join(settings.allowed_domains[:10])}...")
+        from config import update_allowed_domains, settings
+        success = update_allowed_domains(force=True)
+        
+        if success:
+            logger.info(f"✅ Domains updated: {len(settings.allowed_domains)} domains discovered")
+            logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
+        else:
+            logger.warning(f"⚠️  Using fallback domain list: {len(settings.allowed_domains)} domains")
+        
         logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"Error checking domains: {str(e)}")
+        logger.error(f"Failed to update domains from GitHub: {str(e)}")
+        logger.warning("Application will continue with fallback domain list")
         # Continue anyway to allow the app to start
     
     # Start background sync task
@@ -312,10 +276,10 @@ def get_developer_metrics(
     db: Session = Depends(get_db)
 ):
     """Get developer metrics with pagination, search, and filters. When domain is specified, shows domain-specific stats only."""
-    from sqlalchemy import func, case  # Import at function level for use in all branches
     try:
         # If domain filter is applied, calculate stats from PRs in that domain only
         if domain:
+            from sqlalchemy import func, case
             
             # Build base query with domain filter
             pr_query = db.query(
@@ -323,6 +287,7 @@ def get_developer_metrics(
                 func.count(PullRequest.id).label('total_prs'),
                 func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
                 func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                 func.sum(PullRequest.rework_count).label('total_rework'),
                 func.avg(case((PullRequest.merged == True, PullRequest.rework_count), else_=None)).label('avg_rework')
             ).filter(
@@ -343,6 +308,8 @@ def get_developer_metrics(
                 results = sorted(results, key=lambda x: x.open_prs or 0, reverse=True)
             elif sort_by == "merged_prs":
                 results = sorted(results, key=lambda x: x.merged_prs or 0, reverse=True)
+            elif sort_by == "closed_prs":
+                results = sorted(results, key=lambda x: x.closed_prs or 0, reverse=True)
             elif sort_by == "total_rework":
                 results = sorted(results, key=lambda x: x.total_rework or 0, reverse=True)
             
@@ -357,23 +324,16 @@ def get_developer_metrics(
             for result in paginated_results:
                 # Get domains this developer has worked on (for display)
                 dev_domains_query = db.query(PullRequest.domain).filter(
-                    func.lower(PullRequest.developer_username) == result.username.lower()
+                    PullRequest.developer_username == result.username
                 ).distinct()
                 dev_domains = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
                 
+                # Fetch email from DeveloperHierarchy table
+                hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=result.username).first()
+                email = hierarchy.turing_email if hierarchy else None
+                
                 # Calculate merge rate for this domain only
                 merge_rate = (result.merged_prs / result.total_prs * 100) if result.total_prs else 0
-                
-                # Get email from developer_hierarchy
-                email = get_developer_email(result.username, db)
-                
-                # Calculate closed (not merged) PRs for domain filter
-                closed_prs = db.query(PullRequest).filter(
-                    func.lower(PullRequest.developer_username) == result.username.lower(),
-                    PullRequest.domain == domain,
-                    PullRequest.state == 'closed',
-                    PullRequest.merged == False
-                ).count()
                 
                 developers_data.append({
                     'id': 0,  # Placeholder ID for domain-filtered view
@@ -383,7 +343,7 @@ def get_developer_metrics(
                     'total_prs': result.total_prs or 0,
                     'open_prs': result.open_prs or 0,
                     'merged_prs': result.merged_prs or 0,
-                    'closed_prs': closed_prs,
+                    'closed_prs': result.closed_prs or 0,
                     'total_rework': result.total_rework or 0,
                     'last_updated': datetime.now(timezone.utc),
                     'metrics': {
@@ -406,6 +366,7 @@ def get_developer_metrics(
         # Apply search filter (by username)
         if search:
             query = query.filter(Developer.username.ilike(f"%{search}%"))
+        
         # Get total count after filters
         total = query.count()
         
@@ -416,17 +377,20 @@ def get_developer_metrics(
             query = query.order_by(Developer.open_prs.desc())
         elif sort_by == "merged_prs":
             query = query.order_by(Developer.merged_prs.desc())
+        elif sort_by == "closed_prs":
+            query = query.order_by(Developer.closed_prs.desc())
         elif sort_by == "total_rework":
             query = query.order_by(Developer.total_rework.desc())
         
         # Apply pagination
         developers = query.offset(offset).limit(limit).all()
         
-        # Enrich developer data with domains and emails
+        # Enrich developer data with domains
         enriched_developers = []
         for developer in developers:
-            # Get email from developer_hierarchy by matching github_login
-            email = get_developer_email(developer.github_login, db)
+            # Fetch email from DeveloperHierarchy table
+            hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=developer.github_login).first()
+            email = hierarchy.turing_email if hierarchy else None
             
             developer_dict = {
                 'id': developer.id,
@@ -436,7 +400,7 @@ def get_developer_metrics(
                 'total_prs': developer.total_prs,
                 'open_prs': developer.open_prs,
                 'merged_prs': developer.merged_prs,
-                'closed_prs': getattr(developer, 'closed_prs', 0),
+                'closed_prs': developer.closed_prs,
                 'total_rework': developer.total_rework,
                 'last_updated': developer.last_updated,
                 'metrics': developer.metrics or {}
@@ -444,7 +408,7 @@ def get_developer_metrics(
             
             # Add domains this developer has worked on
             dev_domains_query = db.query(PullRequest.domain).filter(
-                func.lower(PullRequest.developer_username) == developer.username.lower()
+                PullRequest.developer_username == developer.username
             ).distinct()
             developer_dict['metrics']['domains'] = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
             
@@ -492,10 +456,10 @@ def get_reviewer_metrics(
     db: Session = Depends(get_db)
 ):
     """Get reviewer metrics with pagination, search, and filters. When domain is specified, shows domain-specific stats only."""
-    from sqlalchemy import func, case  # Import at function level for use in all branches
     try:
         # If domain filter is applied, calculate stats from Reviews in that domain only
         if domain:
+            from sqlalchemy import func, case
             
             # Build base query with domain filter (join Review with PullRequest)
             review_query = db.query(
@@ -503,7 +467,8 @@ def get_reviewer_metrics(
                 func.count(Review.id).label('total_reviews'),
                 func.sum(case((Review.state == 'APPROVED', 1), else_=0)).label('approved_reviews'),
                 func.sum(case((Review.state == 'CHANGES_REQUESTED', 1), else_=0)).label('changes_requested'),
-                func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented')
+                func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented_reviews'),
+                func.sum(case((Review.state == 'DISMISSED', 1), else_=0)).label('dismissed_reviews')
             ).join(
                 PullRequest, Review.pull_request_id == PullRequest.id
             ).filter(
@@ -535,35 +500,37 @@ def get_reviewer_metrics(
             reviewers_data = []
             for result in paginated_results:
                 # Get domains this reviewer has worked on (for display)
-                # Using developer_username as a workaround since review.pull_request_id is mostly null
-                rev_domains_query = db.query(PullRequest.domain).filter(
-                    func.lower(PullRequest.developer_username) == result.username.lower()
+                rev_domains_query = db.query(PullRequest.domain).join(
+                    Review, Review.pull_request_id == PullRequest.id
+                ).filter(
+                    Review.reviewer_login == result.username
                 ).distinct()
                 rev_domains = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+                
+                # Fetch email and role from DeveloperHierarchy table
+                hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=result.username).first()
+                email = hierarchy.turing_email if hierarchy else None
+                role = hierarchy.role if hierarchy else None
                 
                 # Calculate approval rate for this domain only
                 approval_rate = (result.approved_reviews / result.total_reviews * 100) if result.total_reviews else 0
                 
-                # Get recent reviews in this domain (only those with valid pull_request_id)
-                recent_reviews = db.query(Review).filter(
+                # Get recent reviews in this domain
+                recent_reviews = db.query(Review).join(
+                    PullRequest, Review.pull_request_id == PullRequest.id
+                ).filter(
                     Review.reviewer_login == result.username,
-                    Review.pull_request_id != None
+                    PullRequest.domain == domain
                 ).order_by(Review.submitted_at.desc()).limit(5).all()
                 
-                recent_reviews_list = []
-                for review in recent_reviews:
-                    pr = db.query(PullRequest).filter_by(id=review.pull_request_id).first()
-                    if pr and pr.domain == domain:
-                        recent_reviews_list.append({
-                            'pr_title': pr.title,
-                            'state': review.state,
-                            'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
-                        })
-                    if len(recent_reviews_list) >= 5:
-                        break
-                
-                # Get email and role for this reviewer
-                email, role = get_reviewer_info(result.username, db)
+                recent_reviews_list = [
+                    {
+                        'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
+                        'state': review.state,
+                        'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
+                    }
+                    for review in recent_reviews
+                ]
                 
                 reviewers_data.append({
                     'id': 0,  # Placeholder ID for domain-filtered view
@@ -573,11 +540,10 @@ def get_reviewer_metrics(
                     'total_reviews': result.total_reviews or 0,
                     'approved_reviews': result.approved_reviews or 0,
                     'changes_requested': result.changes_requested or 0,
-                    'commented_reviews': result.commented or 0,
-                    'dismissed_reviews': 0,  # Not tracked in domain-filtered queries
+                    'commented_reviews': result.commented_reviews or 0,
+                    'dismissed_reviews': result.dismissed_reviews or 0,
                     'last_updated': datetime.now(timezone.utc),
                     'metrics': {
-                        'commented': result.commented or 0,
                         'approval_rate': round(approval_rate, 2),
                         'domains': rev_domains,
                         'recent_reviews': recent_reviews_list
@@ -597,6 +563,7 @@ def get_reviewer_metrics(
         # Apply search filter (by username)
         if search:
             query = query.filter(Reviewer.username.ilike(f"%{search}%"))
+        
         # Get total count after filters
         total = query.count()
         
@@ -611,11 +578,13 @@ def get_reviewer_metrics(
         # Apply pagination
         reviewers = query.offset(offset).limit(limit).all()
         
-        # Enrich reviewer data with domains, recent reviews, email and role
+        # Enrich reviewer data with domains and recent reviews
         enriched_reviewers = []
         for reviewer in reviewers:
-            # Get email and role from developer_hierarchy
-            email, role = get_reviewer_info(reviewer.username, db)
+            # Fetch email and role from DeveloperHierarchy table
+            hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=reviewer.username).first()
+            email = hierarchy.turing_email if hierarchy else None
+            role = hierarchy.role if hierarchy else None
             
             reviewer_dict = {
                 'id': reviewer.id,
@@ -625,35 +594,35 @@ def get_reviewer_metrics(
                 'total_reviews': reviewer.total_reviews,
                 'approved_reviews': reviewer.approved_reviews,
                 'changes_requested': reviewer.changes_requested,
-                'commented_reviews': getattr(reviewer, 'commented_reviews', 0),
-                'dismissed_reviews': getattr(reviewer, 'dismissed_reviews', 0),
+                'commented_reviews': reviewer.commented_reviews,
+                'dismissed_reviews': reviewer.dismissed_reviews,
                 'last_updated': reviewer.last_updated,
                 'metrics': reviewer.metrics or {}
             }
             
             # Add domains this reviewer has worked on
-            # Workaround: Since most reviews have null pull_request_id, we'll get domains
-            # from PRs where this person appears as a developer (showing their work domains)
-            rev_domains_query = db.query(PullRequest.domain).filter(
-                func.lower(PullRequest.developer_username) == reviewer.username.lower()
+            rev_domains_query = db.query(PullRequest.domain).join(
+                Review, Review.pull_request_id == PullRequest.id
+            ).filter(
+                Review.reviewer_login == reviewer.username
             ).distinct()
             reviewer_dict['metrics']['domains'] = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
             
-            # Add recent reviews (only those with valid pull_request_id)
-            recent_reviews = db.query(Review).filter(
-                Review.reviewer_login == reviewer.username,
-                Review.pull_request_id != None
+            # Add recent reviews
+            recent_reviews = db.query(Review).join(
+                PullRequest, Review.pull_request_id == PullRequest.id
+            ).filter(
+                Review.reviewer_login == reviewer.username
             ).order_by(Review.submitted_at.desc()).limit(5).all()
             
-            reviewer_dict['metrics']['recent_reviews'] = []
-            for review in recent_reviews:
-                pr = db.query(PullRequest).filter_by(id=review.pull_request_id).first()
-                if pr:
-                    reviewer_dict['metrics']['recent_reviews'].append({
-                        'pr_title': pr.title,
-                        'state': review.state,
-                        'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
-                    })
+            reviewer_dict['metrics']['recent_reviews'] = [
+                {
+                    'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
+                    'state': review.state,
+                    'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
+                }
+                for review in recent_reviews
+            ]
             
             enriched_reviewers.append(reviewer_dict)
         
@@ -689,10 +658,13 @@ def get_statuses_list(db: Session = Depends(get_db)):
 @app.get("/api/domains", response_model=List[DomainMetricsResponse])
 def get_domain_metrics(db: Session = Depends(get_db)):
     """Get metrics for allowed domains only, sorted by GitHub creation date (newest first)."""
-    # Note: Domain class not available in current schema, using DomainMetrics instead
+    from database import Domain
     try:
-        # Get domains from domain_metrics table
-        domain_order = []  # Placeholder for domain ordering
+        # Get domains with GitHub creation dates for sorting
+        domain_order = db.query(Domain).filter(
+            Domain.domain_name.in_(settings.allowed_domains),
+            Domain.is_active == True
+        ).order_by(Domain.github_created_at.desc().nullslast()).all()
         
         # Create ordering map
         domain_order_map = {d.domain_name: idx for idx, d in enumerate(domain_order)}
@@ -704,6 +676,7 @@ def get_domain_metrics(db: Session = Depends(get_db)):
         
         # Sort by GitHub creation date using the order map
         domains.sort(key=lambda x: domain_order_map.get(x.domain, 999))
+        
         return [DomainMetricsResponse.from_orm(dom) for dom in domains]
     except Exception as e:
         logger.error(f"Error getting domain metrics: {str(e)}")
@@ -712,15 +685,33 @@ def get_domain_metrics(db: Session = Depends(get_db)):
 @app.get("/api/domains/list")
 def get_domains_list(db: Session = Depends(get_db)):
     """Get list of all allowed domains with IDs (includes domains without PRs)."""
-    # Note: Domain class not available in current schema
+    from database import Domain
     try:
-        # Build result list from allowed domains in config
+        # Get all domains from DB that are in allowed list
+        db_domains = db.query(Domain).filter(
+            Domain.domain_name.in_(settings.allowed_domains),
+            Domain.is_active == True
+        ).order_by(Domain.github_created_at.desc().nullslast(), Domain.domain_name).all()
+        
+        # Create a map of existing domains
+        db_domain_map = {d.domain_name: d for d in db_domains}
+        
+        # Build result list - include ALL allowed domains (even if not in DB yet)
         result = []
-        for idx, domain_name in enumerate(settings.allowed_domains, start=1):
-            result.append({
-                'id': idx,
-                'name': domain_name
-            })
+        for domain_name in settings.allowed_domains:
+            if domain_name in db_domain_map:
+                domain = db_domain_map[domain_name]
+                result.append({
+                    'id': domain.id,
+                    'name': domain.domain_name
+                })
+            else:
+                # Domain exists in config but not in DB yet (no PRs)
+                # Create a temporary entry (will be created properly on next domain sync)
+                result.append({
+                    'id': 0,  # Placeholder ID
+                    'name': domain_name
+                })
         
         return {'domains': result}
     except Exception as e:
@@ -1006,7 +997,7 @@ def normalize_domain(domain: str) -> str:
     domain_lower = domain.lower().strip()
     
     # Check if domain matches any recognized domain (case-insensitive)
-    for recognized in settings.allowed_domains:
+    for recognized in settings.recognized_domains:
         if domain_lower == recognized.lower():
             return recognized
     
@@ -1064,9 +1055,9 @@ def get_domain_aggregation(db: Session = Depends(get_db)):
             metrics = calculate_metrics_from_prs(prs)
             results.append(AggregationMetrics(name=domain, **metrics))
         
-        # Sort: allowed domains alphabetically, then Others at the end
+        # Sort: recognized domains alphabetically, then Others at the end
         recognized_results = sorted(
-            [r for r in results if r.name in settings.allowed_domains],
+            [r for r in results if r.name in settings.recognized_domains],
             key=lambda x: x.name
         )
         others_results = [r for r in results if r.name == 'Others']
@@ -1572,7 +1563,7 @@ def get_filtered_interface_metrics(
     db: Session = Depends(get_db)
 ):
     """Get filtered interface metrics by week, domain, trainer, and status."""
-    # Note: Domain class not available in current schema
+    from database import Domain
     try:
         # Build query
         query = db.query(PullRequest)
@@ -1607,7 +1598,7 @@ def get_filtered_interface_metrics(
         # Group by interface
         interface_stats = {}
         for pr in prs:
-            if not pr.interface_num:
+            if not pr.interface_id:
                 continue
             
             interface_num = pr.interface_num
@@ -1856,39 +1847,35 @@ def get_interface_details(
 @app.get("/api/weeks")
 def get_weeks(db: Session = Depends(get_db)):
     """Get all available weeks."""
-    # Note: Week class not available in current schema
+    from database import Week
     try:
-        # Extract unique weeks from pull requests
-        from sqlalchemy import func, distinct
-        weeks_data = db.query(
-            func.regexp_replace(PullRequest.title, '^.*week_(\\d+).*$', '\\1').label('week_num')
-        ).distinct().all()
-        
-        weeks = [{'id': int(w[0]), 'week_num': int(w[0]), 'week_name': f'Week {w[0]}'} 
-                 for w in weeks_data if w[0] and w[0].isdigit()]
-        weeks.sort(key=lambda x: x['week_num'], reverse=True)
-        return {'weeks': weeks}
+        weeks = db.query(Week).order_by(Week.week_num.desc()).all()
+        return {
+            'weeks': [
+                {
+                    'id': week.id,
+                    'week_name': week.week_name,
+                    'week_num': week.week_num
+                }
+                for week in weeks
+            ]
+        }
     except Exception as e:
         logger.error(f"Error getting weeks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/trainers")
 def get_trainers(db: Session = Depends(get_db)):
-    """Get list of all trainers from developer_hierarchy."""
+    """Get list of all trainers."""
     try:
-        # Get trainers from developer_hierarchy table
-        trainers = db.query(DeveloperHierarchy).filter(
-            DeveloperHierarchy.role == 'Trainer'
-        ).order_by(DeveloperHierarchy.github_user).all()
-        
+        trainers = db.query(User).filter(User.role == 'trainer').order_by(User.github_username).all()
         return {
             'trainers': [
                 {
                     'id': trainer.id,
-                    'username': trainer.github_user,
-                    'email': trainer.turing_email
+                    'username': trainer.github_username
                 }
-                for trainer in trainers if trainer.github_user
+                for trainer in trainers
             ]
         }
     except Exception as e:

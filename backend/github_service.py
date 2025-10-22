@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
 from github import Github, GithubException
 from sqlalchemy.orm import Session
-from database import PullRequest, Review, CheckRun, User, Domain, Interface, Week, Pod, Developer, Reviewer, DomainMetrics, InterfaceMetrics
+from database import PullRequest, Review, CheckRun, User, Domain, Interface, Week, Pod, Developer, Reviewer, DomainMetrics, InterfaceMetrics, UserDomainAssignment
 from config import settings
 from sync_state import update_last_sync_time
 import logging
@@ -22,10 +22,9 @@ class GitHubService:
         # Pattern to match PRs: {trainer_name}-{domain}-{interface_num}-{complexity_level}-{timestamp}
         # Example: haseeb-fund_finance-3-expert-1760428727
         # NOTE: Made trainer name non-greedy to avoid consuming domain parts
-        # NOTE: Using IGNORECASE flag to handle both "Medium"/"Hard" and "medium"/"hard"
-        self.pr_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})$', re.IGNORECASE)
+        self.pr_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})$')
         # Pattern for task files (same format, but may have .json extension)
-        self.task_file_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})(?:\.json)?$', re.IGNORECASE)
+        self.task_file_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)-(expert|hard|medium)-(\d{10})(?:\.json)?$')
         # Pattern to extract week and pod from file paths: week_12/bandreddy_pod/task_name/...
         self.week_pod_pattern = re.compile(r'^week_(\d+)/([^/]+)/')
         
@@ -231,8 +230,6 @@ class GitHubService:
     
     def assign_user_to_domain(self, user: User, domain: Domain, db: Session):
         """Create user-domain assignment if it doesn't exist."""
-        from database import UserDomainAssignment
-        
         existing = db.query(UserDomainAssignment).filter_by(
             user_id=user.id,
             domain_id=domain.id
@@ -693,6 +690,8 @@ class GitHubService:
             reviewer.total_reviews = len(reviews)
             reviewer.approved_reviews = sum(1 for r in reviews if r.state == 'APPROVED')
             reviewer.changes_requested = sum(1 for r in reviews if r.state == 'CHANGES_REQUESTED')
+            reviewer.commented_reviews = sum(1 for r in reviews if r.state == 'COMMENTED')
+            reviewer.dismissed_reviews = sum(1 for r in reviews if r.state == 'DISMISSED')
             
             # Calculate detailed metrics
             metrics = {

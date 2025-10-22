@@ -345,6 +345,23 @@ class Pod(Base):
     # pull_requests = relationship("PullRequest", back_populates="pod")  # Commented out - PullRequest doesn't have this relationship
 
 
+class UserDomainAssignment(Base):
+    """Users assigned to domains (auto or manual)."""
+    __tablename__ = "user_domain_assignments"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    domain_id = Column(Integer, ForeignKey('domains.id', ondelete='CASCADE'), nullable=False, index=True)
+    assignment_type = Column(String, default='auto')
+    assigned_by = Column(Integer, ForeignKey('users.id'))
+    assigned_at = Column(DateTime, default=func.now())
+    is_active = Column(Boolean, default=True)
+    
+    __table_args__ = (
+        UniqueConstraint('user_id', 'domain_id', name='_user_domain_uc'),
+    )
+
+
 class SyncState(Base):
     __tablename__ = "sync_state"
     
