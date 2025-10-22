@@ -6,9 +6,11 @@ class DeveloperMetrics(BaseModel):
     id: int
     username: str
     github_login: Optional[str]
+    email: Optional[str] = None
     total_prs: int
     open_prs: int
     merged_prs: int
+    closed_prs: int = 0
     total_rework: int
     last_updated: datetime
     metrics: Dict[str, Any]
@@ -19,9 +21,13 @@ class DeveloperMetrics(BaseModel):
 class ReviewerMetrics(BaseModel):
     id: int
     username: str
+    email: Optional[str] = None
+    role: Optional[str] = None
     total_reviews: int
     approved_reviews: int
     changes_requested: int
+    commented_reviews: int = 0
+    dismissed_reviews: int = 0
     last_updated: datetime
     metrics: Dict[str, Any]
     

@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   
   const frontendPort = parseInt(env.VITE_FRONTEND_PORT || '3000')
-  const backendUrl = env.VITE_BACKEND_URL || 'http://localhost:8000'
+  const backendUrl = env.VITE_BACKEND_URL || 'http://localhost:4000'
   
   return {
     plugins: [react()],

@@ -39,9 +39,6 @@ const ReviewerView = ({ lastUpdate }) => {
   }, [searchTerm]);
 
   useEffect(() => {
-    // Clear current data immediately when filters change to prevent showing stale data
-    setReviewers([]);
-    setTotal(0);
     fetchReviewers();
   }, [lastUpdate, sortBy, debouncedSearchTerm, selectedDomain]);
 
@@ -160,11 +157,17 @@ const ReviewerView = ({ lastUpdate }) => {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-56">
                   Reviewer
                 </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-52">
+                  Email
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
+                  Role
+                </th>
                 <th 
-                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-36"
                   onClick={() => handleSort('total_reviews')}
                 >
                   <div className="flex items-center justify-center">
@@ -175,7 +178,7 @@ const ReviewerView = ({ lastUpdate }) => {
                   </div>
                 </th>
                 <th 
-                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-32"
                   onClick={() => handleSort('approved_reviews')}
                 >
                   <div className="flex items-center justify-center">
@@ -186,7 +189,7 @@ const ReviewerView = ({ lastUpdate }) => {
                   </div>
                 </th>
                 <th 
-                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-44"
                   onClick={() => handleSort('changes_requested')}
                 >
                   <div className="flex items-center justify-center">
@@ -195,6 +198,12 @@ const ReviewerView = ({ lastUpdate }) => {
                       sortOrder === 'desc' ? <ChevronDownIcon className="h-4 w-4 ml-1" /> : <ChevronUpIcon className="h-4 w-4 ml-1" />
                     )}
                   </div>
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
+                  Commented
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
+                  Dismissed
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Approval Rate
@@ -232,6 +241,16 @@ const ReviewerView = ({ lastUpdate }) => {
                         </div>
                       </div>
                     </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="text-sm text-gray-700">
+                        {reviewer.email || 'N/A'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        {reviewer.role || 'N/A'}
+                      </span>
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
                       <span className="text-lg font-semibold text-gray-900">{reviewer.total_reviews}</span>
                     </td>
@@ -245,6 +264,16 @@ const ReviewerView = ({ lastUpdate }) => {
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-warning-100 text-warning-800">
                         <XMarkIcon className="h-3 w-3 mr-1" />
                         {reviewer.changes_requested}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        {reviewer.commented_reviews || 0}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                        {reviewer.dismissed_reviews || 0}
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -269,10 +298,7 @@ const ReviewerView = ({ lastUpdate }) => {
                           </span>
                         ))}
                         {reviewer.metrics?.domains && Array.isArray(reviewer.metrics.domains) && reviewer.metrics.domains.length > 3 && (
-                          <span 
-                            className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500 cursor-help"
-                            title={reviewer.metrics.domains.slice(3).join(', ')}
-                          >
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
                             +{reviewer.metrics.domains.length - 3}
                           </span>
                         )}

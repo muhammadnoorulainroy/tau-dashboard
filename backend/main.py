@@ -287,6 +287,7 @@ def get_developer_metrics(
                 func.count(PullRequest.id).label('total_prs'),
                 func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
                 func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                 func.sum(PullRequest.rework_count).label('total_rework'),
                 func.avg(case((PullRequest.merged == True, PullRequest.rework_count), else_=None)).label('avg_rework')
             ).filter(
@@ -307,6 +308,8 @@ def get_developer_metrics(
                 results = sorted(results, key=lambda x: x.open_prs or 0, reverse=True)
             elif sort_by == "merged_prs":
                 results = sorted(results, key=lambda x: x.merged_prs or 0, reverse=True)
+            elif sort_by == "closed_prs":
+                results = sorted(results, key=lambda x: x.closed_prs or 0, reverse=True)
             elif sort_by == "total_rework":
                 results = sorted(results, key=lambda x: x.total_rework or 0, reverse=True)
             
@@ -325,6 +328,10 @@ def get_developer_metrics(
                 ).distinct()
                 dev_domains = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
                 
+                # Fetch email from DeveloperHierarchy table
+                hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=result.username).first()
+                email = hierarchy.turing_email if hierarchy else None
+                
                 # Calculate merge rate for this domain only
                 merge_rate = (result.merged_prs / result.total_prs * 100) if result.total_prs else 0
                 
@@ -332,9 +339,11 @@ def get_developer_metrics(
                     'id': 0,  # Placeholder ID for domain-filtered view
                     'username': result.username,
                     'github_login': result.username,
+                    'email': email,
                     'total_prs': result.total_prs or 0,
                     'open_prs': result.open_prs or 0,
                     'merged_prs': result.merged_prs or 0,
+                    'closed_prs': result.closed_prs or 0,
                     'total_rework': result.total_rework or 0,
                     'last_updated': datetime.now(timezone.utc),
                     'metrics': {
@@ -368,6 +377,8 @@ def get_developer_metrics(
             query = query.order_by(Developer.open_prs.desc())
         elif sort_by == "merged_prs":
             query = query.order_by(Developer.merged_prs.desc())
+        elif sort_by == "closed_prs":
+            query = query.order_by(Developer.closed_prs.desc())
         elif sort_by == "total_rework":
             query = query.order_by(Developer.total_rework.desc())
         
@@ -377,13 +388,19 @@ def get_developer_metrics(
         # Enrich developer data with domains
         enriched_developers = []
         for developer in developers:
+            # Fetch email from DeveloperHierarchy table
+            hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=developer.github_login).first()
+            email = hierarchy.turing_email if hierarchy else None
+            
             developer_dict = {
                 'id': developer.id,
                 'username': developer.username,
                 'github_login': developer.github_login,
+                'email': email,
                 'total_prs': developer.total_prs,
                 'open_prs': developer.open_prs,
                 'merged_prs': developer.merged_prs,
+                'closed_prs': developer.closed_prs,
                 'total_rework': developer.total_rework,
                 'last_updated': developer.last_updated,
                 'metrics': developer.metrics or {}
@@ -450,7 +467,8 @@ def get_reviewer_metrics(
                 func.count(Review.id).label('total_reviews'),
                 func.sum(case((Review.state == 'APPROVED', 1), else_=0)).label('approved_reviews'),
                 func.sum(case((Review.state == 'CHANGES_REQUESTED', 1), else_=0)).label('changes_requested'),
-                func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented')
+                func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented_reviews'),
+                func.sum(case((Review.state == 'DISMISSED', 1), else_=0)).label('dismissed_reviews')
             ).join(
                 PullRequest, Review.pull_request_id == PullRequest.id
             ).filter(
@@ -489,6 +507,11 @@ def get_reviewer_metrics(
                 ).distinct()
                 rev_domains = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
                 
+                # Fetch email and role from DeveloperHierarchy table
+                hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=result.username).first()
+                email = hierarchy.turing_email if hierarchy else None
+                role = hierarchy.role if hierarchy else None
+                
                 # Calculate approval rate for this domain only
                 approval_rate = (result.approved_reviews / result.total_reviews * 100) if result.total_reviews else 0
                 
@@ -512,12 +535,15 @@ def get_reviewer_metrics(
                 reviewers_data.append({
                     'id': 0,  # Placeholder ID for domain-filtered view
                     'username': result.username,
+                    'email': email,
+                    'role': role,
                     'total_reviews': result.total_reviews or 0,
                     'approved_reviews': result.approved_reviews or 0,
                     'changes_requested': result.changes_requested or 0,
+                    'commented_reviews': result.commented_reviews or 0,
+                    'dismissed_reviews': result.dismissed_reviews or 0,
                     'last_updated': datetime.now(timezone.utc),
                     'metrics': {
-                        'commented': result.commented or 0,
                         'approval_rate': round(approval_rate, 2),
                         'domains': rev_domains,
                         'recent_reviews': recent_reviews_list
@@ -555,12 +581,21 @@ def get_reviewer_metrics(
         # Enrich reviewer data with domains and recent reviews
         enriched_reviewers = []
         for reviewer in reviewers:
+            # Fetch email and role from DeveloperHierarchy table
+            hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=reviewer.username).first()
+            email = hierarchy.turing_email if hierarchy else None
+            role = hierarchy.role if hierarchy else None
+            
             reviewer_dict = {
                 'id': reviewer.id,
                 'username': reviewer.username,
+                'email': email,
+                'role': role,
                 'total_reviews': reviewer.total_reviews,
                 'approved_reviews': reviewer.approved_reviews,
                 'changes_requested': reviewer.changes_requested,
+                'commented_reviews': reviewer.commented_reviews,
+                'dismissed_reviews': reviewer.dismissed_reviews,
                 'last_updated': reviewer.last_updated,
                 'metrics': reviewer.metrics or {}
             }

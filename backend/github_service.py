@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
 from github import Github, GithubException
 from sqlalchemy.orm import Session
-from database import PullRequest, Review, CheckRun, User, Domain, Interface, Week, Pod, Developer, Reviewer, DomainMetrics, InterfaceMetrics
+from database import PullRequest, Review, CheckRun, User, Domain, Interface, Week, Pod, Developer, Reviewer, DomainMetrics, InterfaceMetrics, UserDomainAssignment
 from config import settings
 from sync_state import update_last_sync_time
 import logging
@@ -230,8 +230,6 @@ class GitHubService:
     
     def assign_user_to_domain(self, user: User, domain: Domain, db: Session):
         """Create user-domain assignment if it doesn't exist."""
-        from database import UserDomainAssignment
-        
         existing = db.query(UserDomainAssignment).filter_by(
             user_id=user.id,
             domain_id=domain.id
@@ -630,6 +628,7 @@ class GitHubService:
             dev.total_prs = len(prs)
             dev.open_prs = sum(1 for pr in prs if pr.state == 'open')
             dev.merged_prs = sum(1 for pr in prs if pr.merged)
+            dev.closed_prs = sum(1 for pr in prs if pr.state == 'closed' and not pr.merged)
             dev.total_rework = sum(pr.rework_count for pr in prs)
             dev.total_check_failures = sum(pr.check_failures for pr in prs)
             
@@ -691,6 +690,8 @@ class GitHubService:
             reviewer.total_reviews = len(reviews)
             reviewer.approved_reviews = sum(1 for r in reviews if r.state == 'APPROVED')
             reviewer.changes_requested = sum(1 for r in reviews if r.state == 'CHANGES_REQUESTED')
+            reviewer.commented_reviews = sum(1 for r in reviews if r.state == 'COMMENTED')
+            reviewer.dismissed_reviews = sum(1 for r in reviews if r.state == 'DISMISSED')
             
             # Calculate detailed metrics
             metrics = {
