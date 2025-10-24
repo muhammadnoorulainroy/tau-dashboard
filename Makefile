@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 .PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone db-backfill-weeks db-cleanup-weeks generate-secret
 
 # Default target
