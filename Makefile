@@ -132,10 +132,10 @@ db-backfill-weeks:
 	@echo "This will update PRs that have NULL week_id by parsing their file paths."
 	@echo ""
 	@echo "Options:"
-	@echo "  To preview changes: cd backend && python backfill_week_pod.py --dry-run"
-	@echo "  To limit PRs:       cd backend && python backfill_week_pod.py --limit 10"
+	@echo "  To preview changes: cd backend && source venv/bin/activate && python backfill_week_pod.py --dry-run"
+	@echo "  To limit PRs:       cd backend && source venv/bin/activate && python backfill_week_pod.py --limit 10"
 	@echo ""
-	cd backend && python backfill_week_pod.py
+	cd backend && source venv/bin/activate && python backfill_week_pod.py
 
 # Generate secure secret key
 generate-secret:
