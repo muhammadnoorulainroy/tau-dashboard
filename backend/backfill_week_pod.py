@@ -54,14 +54,15 @@ class WeekPodBackfiller:
     
     def get_or_create_week(self, week_num: int, db: Session) -> Optional[Week]:
         """Get or create a Week entity."""
-        week_name = f"Week {week_num}"
+        # Use same format as github_service.py to avoid duplicates
+        week_name = f"week_{week_num}"  # Lowercase with underscore
         week = db.query(Week).filter_by(week_name=week_name).first()
         
         if not week:
             week = Week(
                 week_name=week_name,
                 week_num=week_num,
-                display_name=week_name,
+                display_name=f"Week {week_num}",  # Human-readable format for display
                 start_date=None,  # Can be updated later if needed
                 end_date=None
             )

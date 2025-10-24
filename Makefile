@@ -1,4 +1,4 @@
-.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone db-backfill-weeks generate-secret
+.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone db-backfill-weeks db-cleanup-weeks generate-secret
 
 # Default target
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  make db-test             - Test migration on test database"
 	@echo "  make db-status           - Show database status"
 	@echo "  make db-backfill-weeks   - Backfill week/pod data for existing PRs"
+	@echo "  make db-cleanup-weeks    - Clean up duplicate week entries"
 	@echo "  make db-reset            - Reset database (DANGER: deletes all data)"
 	@echo "  make db-init             - Initialize database (legacy, use db-migrate)"
 	@echo ""
@@ -136,6 +137,13 @@ db-backfill-weeks:
 	@echo "  To limit PRs:       cd backend && python backfill_week_pod.py --limit 10"
 	@echo ""
 	cd backend && python backfill_week_pod.py
+
+# Clean up duplicate week entries
+db-cleanup-weeks:
+	@echo "🧹 Cleaning up duplicate week entries..."
+	@echo "This will merge duplicate weeks (e.g., 'Week 13' and 'week_13') into one."
+	@echo ""
+	cd backend && python cleanup_duplicate_weeks.py
 
 # Generate secure secret key
 generate-secret:
