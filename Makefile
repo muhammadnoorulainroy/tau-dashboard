@@ -51,7 +51,7 @@ install: install-backend install-frontend
 # Install backend dependencies
 install-backend:
 	@echo "📦 Installing backend dependencies..."
-	cd backend && pip install -r requirements.txt
+	cd backend && source venv/bin/activate && pip install -r requirements.txt
 
 # Install frontend dependencies
 install-frontend:
@@ -64,7 +64,7 @@ start-backend:
 	@echo "Creating backend .env symlink if needed..."
 	@cd backend && [ -f .env ] || ln -s .env.dev .env
 	@echo "Starting backend on port 4000..."
-	cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 4000
+	cd backend && source venv/bin/activate && uvicorn main:app --reload --host 0.0.0.0 --port 4000
 
 # Start frontend dev server
 start-frontend:
@@ -83,7 +83,7 @@ start:
 # Run tests
 test:
 	@echo "🧪 Running tests..."
-	@cd backend && python -m pytest || echo "pytest not configured yet"
+	@cd backend && source venv/bin/activate && python -m pytest || echo "pytest not configured yet"
 
 # Trigger manual sync
 sync:
@@ -93,12 +93,12 @@ sync:
 # Setup database (create database + tables in one command)
 db-setup:
 	@echo "🗄️  Setting up database (will create if needed)..."
-	cd backend && python migrate_db.py --create-db
+	cd backend && source venv/bin/activate && python migrate_db.py --create-db
 
 # Run database migration (create tables)
 db-migrate:
 	@echo "🗄️  Running database migration..."
-	cd backend && python migrate_db.py
+	cd backend && source venv/bin/activate && python migrate_db.py
 
 # Test migration on test database (safe)
 db-test:
@@ -109,13 +109,13 @@ db-test:
 db-status:
 	@echo "📊 Database Status:"
 	@echo ""
-	@cd backend && python -c "from database import SessionLocal; from sqlalchemy import inspect; db = SessionLocal(); inspector = inspect(db.bind); tables = inspector.get_table_names(); print(f'Tables: {len(tables)}'); print(''); [print(f'  - {t}') for t in sorted(tables)]; db.close()"
+	@cd backend && source venv/bin/activate && python -c "from database import SessionLocal; from sqlalchemy import inspect; db = SessionLocal(); inspector = inspect(db.bind); tables = inspector.get_table_names(); print(f'Tables: {len(tables)}'); print(''); [print(f'  - {t}') for t in sorted(tables)]; db.close()"
 
 # Initialize database (legacy - use db-migrate instead)
 db-init:
 	@echo "🗄️  Initializing database (legacy method)..."
 	@echo "⚠️  Consider using 'make db-migrate' instead"
-	cd backend && python -c "from database import init_db; init_db()"
+	cd backend && source venv/bin/activate && python -c "from database import init_db; init_db()"
 
 # Reset database (DANGER: deletes all data)
 db-reset:
@@ -143,7 +143,7 @@ db-cleanup-weeks:
 	@echo "🧹 Cleaning up duplicate week entries..."
 	@echo "This will merge duplicate weeks (e.g., 'Week 13' and 'week_13') into one."
 	@echo ""
-	cd backend && python cleanup_duplicate_weeks.py
+	cd backend && source venv/bin/activate && python cleanup_duplicate_weeks.py
 
 # Generate secure secret key
 generate-secret:
