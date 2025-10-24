@@ -204,8 +204,9 @@ class GitHubService:
         if not week:
             try:
                 week = Week(
-                    week_name=f"week_{week_num}",
-                    week_num=week_num
+                    week_name=f"week_{week_num}",  # Database identifier (lowercase_underscore)
+                    week_num=week_num,
+                    display_name=f"Week {week_num}"  # Human-readable format for UI
                 )
                 db.add(week)
                 db.flush()
@@ -268,8 +269,20 @@ class GitHubService:
         
         return None
     
-    def sync_pull_request(self, pr, db: Session) -> Optional[PullRequest]:
-        """Sync a single pull request to the database."""
+    def sync_pull_request(self, pr, db: Session, skip_nested_data: bool = False, api_call_counter: dict = None) -> Optional[PullRequest]:
+        """
+        Sync a single pull request to the database.
+        
+        Args:
+            pr: GitHub PR object
+            db: Database session
+            skip_nested_data: If True, skip fetching files/reviews/checks (for closed PRs with complete data)
+            api_call_counter: Optional dict to track API calls (keys: 'files', 'reviews', 'commits', 'checks')
+        """
+        # Initialize counter if not provided
+        if api_call_counter is None:
+            api_call_counter = {'files': 0, 'reviews': 0, 'commits': 0, 'checks': 0}
+        
         try:
             # Handle GitHub 404 errors (deleted PRs)
             try:
@@ -296,6 +309,17 @@ class GitHubService:
             if not db_pr:
                 db_pr = PullRequest(github_id=pr.id)
                 is_new_pr = True
+            
+            # Quick update for closed PRs that already have complete data
+            if skip_nested_data and pr.state == 'closed' and db_pr and db_pr.week_id:
+                logger.debug(f"PR #{pr.number}: Closed PR with complete data, quick update only")
+                db_pr.state = pr.state
+                db_pr.merged = pr.merged
+                db_pr.updated_at = pr.updated_at
+                db_pr.closed_at = pr.closed_at
+                db_pr.merged_at = pr.merged_at
+                db_pr.last_synced = datetime.now(timezone.utc)
+                return db_pr
             
             # Update PR fields
             db_pr.number = pr.number
@@ -362,13 +386,31 @@ class GitHubService:
             db_pr.interface_id = interface.id
             
             # 4. Parse and create/get week and pod from PR file changes
-            week_pod_info = self.parse_week_pod_from_pr_files(pr)
-            if week_pod_info:
-                week_num, pod_name = week_pod_info
-                week = self.get_or_create_week(week_num, db)
-                pod = self.get_or_create_pod(pod_name, db)
-                db_pr.week_id = week.id
-                db_pr.pod_id = pod.id
+            # Optimization: Only fetch files if we don't already have week/pod data
+            # Skip if: (1) we're doing a quick update (skip_nested_data=True) OR
+            #          (2) we already have week_id AND pod_id
+            should_skip_files = skip_nested_data or (db_pr.week_id and db_pr.pod_id)
+            
+            if not should_skip_files:
+                # Fetch files when:
+                # 1. Not skipping nested data (full sync needed)
+                # 2. AND (PR doesn't have week_id OR doesn't have pod_id)
+                week_pod_info = self.parse_week_pod_from_pr_files(pr)
+                api_call_counter['files'] += 1  # Track API call
+                if week_pod_info:
+                    week_num, pod_name = week_pod_info
+                    week = self.get_or_create_week(week_num, db)
+                    pod = self.get_or_create_pod(pod_name, db)
+                    db_pr.week_id = week.id
+                    db_pr.pod_id = pod.id
+                    logger.debug(f"PR #{pr.number}: Parsed week/pod from files")
+                else:
+                    logger.debug(f"PR #{pr.number}: No week/pod found in file paths")
+            else:
+                if skip_nested_data:
+                    logger.debug(f"PR #{pr.number}: Skipping file fetch (nested data skipped)")
+                else:
+                    logger.debug(f"PR #{pr.number}: Week/pod already set (week_id={db_pr.week_id}, pod_id={db_pr.pod_id}), skipping file fetch")
             
             # 5. Assign trainer to domain (for access control)
             self.assign_user_to_domain(trainer, domain, db)
@@ -401,8 +443,12 @@ class GitHubService:
                     raise
             
             # Now sync reviews and check runs (they need db_pr.id to be set)
-            self.sync_reviews(pr, db_pr, db)
-            self.sync_check_runs(pr, db_pr, db)
+            # Optimization: Skip if we're doing a quick update (skip_nested_data=True)
+            if not skip_nested_data:
+                self.sync_reviews(pr, db_pr, db, api_call_counter)
+                self.sync_check_runs(pr, db_pr, db, api_call_counter)
+            else:
+                logger.debug(f"PR #{pr.number}: Skipping reviews/check runs fetch (nested data skipped)")
             
             return db_pr
             
@@ -410,9 +456,13 @@ class GitHubService:
             logger.error(f"Error syncing PR {pr.number}: {str(e)}")
             return None
     
-    def sync_reviews(self, pr, db_pr: PullRequest, db: Session):
+    def sync_reviews(self, pr, db_pr: PullRequest, db: Session, api_call_counter: dict = None):
         """Sync reviews for a pull request."""
+        if api_call_counter is None:
+            api_call_counter = {'reviews': 0}
+        
         try:
+            api_call_counter['reviews'] += 1  # Track API call for pr.get_reviews()
             for review in pr.get_reviews():
                 # Create/get reviewer user (default role: pod_lead, can be updated later)
                 reviewer = self.get_or_create_user(review.user.login, 'pod_lead', db)
@@ -442,11 +492,17 @@ class GitHubService:
         except Exception as e:
             logger.error(f"Error syncing reviews for PR {pr.number}: {str(e)}")
     
-    def sync_check_runs(self, pr, db_pr: PullRequest, db: Session):
+    def sync_check_runs(self, pr, db_pr: PullRequest, db: Session, api_call_counter: dict = None):
         """Sync check runs for a pull request."""
+        if api_call_counter is None:
+            api_call_counter = {'commits': 0, 'checks': 0}
+        
         try:
             # Get check runs from the head commit (not from PR directly)
+            api_call_counter['commits'] += 1  # Track API call for get_commit()
             commit = self.repo.get_commit(pr.head.sha)
+            
+            api_call_counter['checks'] += 1  # Track API call for get_check_runs()
             check_runs = commit.get_check_runs()
             
             check_failures = 0
@@ -489,15 +545,17 @@ class GitHubService:
         
         # Sync ALL open PRs
         logger.info("Syncing all OPEN PRs...")
-        for pr in self.repo.get_pulls(state='open', sort='created', direction='asc'):
+        pull_requests = self.repo.get_pulls(state='open', sort='created', direction='asc')
+        import pdb; pdb.set_trace()
+        for pr in pull_requests:
             total_checked += 1
             if self.sync_pull_request(pr, db):
                 synced_count += 1
                 if synced_count % 50 == 0:
-                    db.commit()
+                    db.commit()   
                     logger.info(f"Synced {synced_count} PRs (checked {total_checked}, skipped {skipped_count})...")
-            else:
-                skipped_count += 1
+                else:
+                    skipped_count += 1
         
         # Sync ALL closed PRs (including merged)
         logger.info("Syncing all CLOSED PRs...")
@@ -982,10 +1040,27 @@ class GitHubService:
                 continue
     
     def get_incremental_updates(self, db: Session, last_sync: datetime) -> int:
-        """Get incremental updates since last sync."""
+        """
+        Get incremental updates since last sync.
+        
+        Optimizations:
+        - Smart sync: checks what actually changed before doing expensive API calls
+        - Skips nested data (files/reviews/checks) for closed PRs with complete data
+        - Early break when reaching PRs older than last sync
+        """
         synced_count = 0
         skipped_count = 0
         checked_count = 0
+        quick_updates = 0
+        
+        # Track API calls
+        api_calls = {
+            'pagination': 0,
+            'files': 0,
+            'reviews': 0,
+            'commits': 0,
+            'checks': 0
+        }
         
         # Ensure last_sync is timezone-aware
         if last_sync.tzinfo is None:
@@ -994,10 +1069,18 @@ class GitHubService:
         logger.info(f"Starting incremental sync for PRs updated after {last_sync}")
         
         # Get recently updated PRs - explicitly sort by updated date descending
-        # GitHub API: sort='updated' returns PRs sorted by most recently updated first
+        # Note: PyGithub handles pagination automatically (30 PRs per page by default)
         try:
-            for pr in self.repo.get_pulls(state='all', sort='updated', direction='desc'):
+            for pr in self.repo.get_pulls(
+                state='all', 
+                sort='updated', 
+                direction='desc'
+            ):
                 checked_count += 1
+                
+                # Track pagination API calls (GitHub returns 30 PRs per page by default)
+                if checked_count % 30 == 1:  # First PR of each page
+                    api_calls['pagination'] += 1
                 
                 # Check if PR was updated after last sync
                 if pr.updated_at <= last_sync:
@@ -1006,18 +1089,75 @@ class GitHubService:
                     logger.info(f"Reached PRs older than last sync at PR #{pr.number} (updated: {pr.updated_at})")
                     break
                 
-                # Try to sync this PR
-                if self.sync_pull_request(pr, db):
-                    synced_count += 1
-                    if synced_count % 10 == 0:
-                        db.commit()
-                        logger.info(f"Incremental sync progress: synced {synced_count} PRs (checked {checked_count})...")
-                else:
-                    skipped_count += 1
+                # Smart sync: Check what actually changed to avoid unnecessary API calls
+                db_pr = db.query(PullRequest).filter_by(github_id=pr.id).first()
                 
-                # Safety limit to prevent runaway syncs
-                if checked_count > 500:
-                    logger.warning(f"Checked 500 PRs, stopping incremental sync. Consider a full sync.")
+                if db_pr:
+                    # PR exists - determine if we need full sync or just metadata update
+                    needs_full_sync = False
+                    skip_nested = False
+                    
+                    # Check if significant changes happened (these are FREE - no API calls)
+                    metadata_changed = (
+                        db_pr.state != pr.state or
+                        db_pr.merged != pr.merged or
+                        db_pr.title != pr.title
+                    )
+                    
+                    if metadata_changed:
+                        logger.debug(f"PR #{pr.number}: Metadata changed")
+                        needs_full_sync = True
+                    
+                    # Open PRs might have new commits/reviews - need to check
+                    if pr.state == 'open':
+                        logger.debug(f"PR #{pr.number}: Open PR, syncing updates")
+                        needs_full_sync = True
+                    
+                    # PR just closed/merged - do final sync with all data
+                    elif pr.state == 'closed' and db_pr.state == 'open':
+                        logger.info(f"PR #{pr.number}: Just closed/merged, doing final sync")
+                        needs_full_sync = True
+                    
+                    # Closed PR that was already closed - skip expensive nested data fetching
+                    elif pr.state == 'closed' and db_pr.state == 'closed' and db_pr.week_id:
+                        logger.debug(f"PR #{pr.number}: Closed PR with complete data, quick update")
+                        skip_nested = True
+                        needs_full_sync = True
+                    
+                    if not needs_full_sync:
+                        # No significant changes - just update timestamp and skip
+                        db_pr.last_synced = datetime.now(timezone.utc)
+                        skipped_count += 1
+                        logger.debug(f"PR #{pr.number}: No significant changes, skipping")
+                        continue
+                    
+                    # Sync with appropriate flags
+                    if self.sync_pull_request(pr, db, skip_nested_data=skip_nested, api_call_counter=api_calls):
+                        if skip_nested:
+                            quick_updates += 1
+                        else:
+                            synced_count += 1
+                        
+                        if (synced_count + quick_updates) % 10 == 0:
+                            db.commit()
+                            total_api_calls = sum(api_calls.values())
+                            logger.info(f"Incremental sync progress: {synced_count} full, {quick_updates} quick, {skipped_count} skipped (checked {checked_count}) | API calls: {total_api_calls}")
+                    else:
+                        skipped_count += 1
+                else:
+                    # New PR - do full sync
+                    if self.sync_pull_request(pr, db, api_call_counter=api_calls):
+                        synced_count += 1
+                        if synced_count % 10 == 0:
+                            db.commit()
+                            total_api_calls = sum(api_calls.values())
+                            logger.info(f"Incremental sync progress: {synced_count} new PRs synced | API calls: {total_api_calls}")
+                    else:
+                        skipped_count += 1
+                
+                # Safety limit to prevent runaway syncs (reduced from 500)
+                if checked_count > 200:
+                    logger.warning(f"Checked 200 PRs, stopping incremental sync. Consider less frequent syncs or full sync.")
                     break
                     
         except Exception as e:
@@ -1027,10 +1167,14 @@ class GitHubService:
         
         db.commit()
         
-        logger.info(f"Incremental sync complete: synced {synced_count} PRs, skipped {skipped_count}, checked {checked_count} total")
+        # Calculate total API calls
+        total_api_calls = sum(api_calls.values())
+        
+        logger.info(f"✅ Incremental sync complete: {synced_count} full syncs, {quick_updates} quick updates, {skipped_count} skipped, {checked_count} checked total")
+        logger.info(f"📊 API calls breakdown: Total={total_api_calls} (pagination={api_calls['pagination']}, files={api_calls['files']}, reviews={api_calls['reviews']}, commits={api_calls['commits']}, checks={api_calls['checks']})")
         
         # Update metrics if we synced any PRs
-        if synced_count > 0:
+        if synced_count > 0 or quick_updates > 0:
             logger.info("Updating aggregated metrics...")
             self.update_developer_metrics(db)
             self.update_reviewer_metrics(db)
@@ -1043,7 +1187,7 @@ class GitHubService:
         update_last_sync_time(db)
         logger.info("Sync state updated")
         
-        return synced_count
+        return synced_count + quick_updates  # Total number of PRs updated
     
     def parse_task_filename(self, filename: str) -> Optional[Dict]:
         """Parse task filename to extract trainer, domain, interface, complexity, and timestamp."""
