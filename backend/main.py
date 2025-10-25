@@ -246,6 +246,10 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
         sync_state = db.query(SyncState).first()
         last_sync_time = sync_state.last_sync_time if sync_state else None
         
+        # Ensure timezone-aware last_sync_time
+        if last_sync_time and last_sync_time.tzinfo is None:
+            last_sync_time = last_sync_time.replace(tzinfo=timezone.utc)
+        
         return DashboardOverview(
             total_prs=total_prs,
             open_prs=open_prs,
@@ -258,7 +262,7 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
                 'title': pr.title,
                 'state': pr.state,
                 'developer': pr.developer_username,
-                'created_at': pr.created_at
+                'created_at': pr.created_at.isoformat() if pr.created_at else None
             } for pr in recent_prs],
             last_sync_time=last_sync_time
         )

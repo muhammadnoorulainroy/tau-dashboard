@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_serializer
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 class DeveloperMetrics(BaseModel):
     id: int
@@ -88,6 +88,17 @@ class DashboardOverview(BaseModel):
     average_rework: float
     recent_activity: List[Dict[str, Any]]
     last_sync_time: Optional[datetime] = None
+    
+    @field_serializer('last_sync_time')
+    def serialize_datetime(self, dt: Optional[datetime]) -> Optional[str]:
+        """Serialize datetime to ISO 8601 format with timezone (UTC)."""
+        if dt is None:
+            return None
+        # Ensure timezone-aware
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Return ISO format with timezone (e.g., "2025-10-25T18:47:38.804295+00:00")
+        return dt.isoformat()
 
 class PRStateDistribution(BaseModel):
     domain: Optional[str]
