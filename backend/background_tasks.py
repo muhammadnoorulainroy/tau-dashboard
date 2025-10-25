@@ -60,8 +60,8 @@ async def start_background_sync(connection_manager):
             except Exception as e:
                 logger.error(f"Error in background sync: {str(e)}")
             
-            # Wait for 5 minutes between syncs
-            await asyncio.sleep(300)
+            # Wait for 1 hour between syncs
+            await asyncio.sleep(3600)
     
     except asyncio.CancelledError:
         # Clean shutdown

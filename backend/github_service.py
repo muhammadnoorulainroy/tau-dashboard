@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 class GitHubService:
     def __init__(self):
-        self.github = Github(settings.github_token)
+        # Set per_page=100 to fetch 100 items per page (max allowed by GitHub API)
+        self.github = Github(settings.github_token, per_page=100)
         self.repo = self.github.get_repo(settings.github_repo)
         
         # Known valid domains (for fixing malformed PR titles)
@@ -204,9 +205,8 @@ class GitHubService:
         if not week:
             try:
                 week = Week(
-                    week_name=f"week_{week_num}",  # Database identifier (lowercase_underscore)
-                    week_num=week_num,
-                    display_name=f"Week {week_num}"  # Human-readable format for UI
+                    week_name=f"week_{week_num}",
+                    week_num=week_num
                 )
                 db.add(week)
                 db.flush()
@@ -234,19 +234,49 @@ class GitHubService:
     
     def assign_user_to_domain(self, user: User, domain: Domain, db: Session):
         """Create user-domain assignment if it doesn't exist."""
+        from sqlalchemy.exc import IntegrityError
+        
+        # Validate inputs
+        if not user or not domain:
+            logger.warning(f"Cannot assign user/domain: user={user}, domain={domain}")
+            return
+        
+        # Refresh user and domain to ensure they're in the current session
+        try:
+            db.refresh(user)
+            db.refresh(domain)
+        except Exception as e:
+            logger.warning(f"Could not refresh user/domain objects: {str(e)}")
+            # Try to re-fetch from DB
+            user = db.query(User).filter_by(id=user.id).first()
+            domain = db.query(Domain).filter_by(id=domain.id).first()
+            if not user or not domain:
+                logger.error(f"Could not re-fetch user/domain after refresh failure")
+                return
+        
         existing = db.query(UserDomainAssignment).filter_by(
             user_id=user.id,
             domain_id=domain.id
         ).first()
         
         if not existing:
-            assignment = UserDomainAssignment(
-                user_id=user.id,
-                domain_id=domain.id
-            )
-            db.add(assignment)
-            db.flush()
-            logger.info(f"Assigned user {user.github_username} to domain {domain.domain_name}")
+            try:
+                assignment = UserDomainAssignment(
+                    user_id=user.id,
+                    domain_id=domain.id
+                )
+                db.add(assignment)
+                db.flush()
+                logger.info(f"Assigned user {user.github_username} to domain {domain.domain_name}")
+            except IntegrityError as e:
+                # Assignment might already exist or foreign key constraint failed
+                db.rollback()
+                logger.warning(f"Could not assign user {user.github_username} to domain {domain.domain_name}: {str(e)}")
+                # Try to re-fetch the assignment (might have been created by another transaction)
+                existing = db.query(UserDomainAssignment).filter_by(
+                    user_id=user.id,
+                    domain_id=domain.id
+                ).first()
     
     def parse_week_pod_from_pr_files(self, pr) -> Optional[Tuple[int, str]]:
         """
@@ -269,7 +299,7 @@ class GitHubService:
         
         return None
     
-    def sync_pull_request(self, pr, db: Session, skip_nested_data: bool = False, api_call_counter: dict = None) -> Optional[PullRequest]:
+    def sync_pull_request(self, pr, db: Session, skip_nested_data: bool = False) -> Optional[PullRequest]:
         """
         Sync a single pull request to the database.
         
@@ -277,12 +307,7 @@ class GitHubService:
             pr: GitHub PR object
             db: Database session
             skip_nested_data: If True, skip fetching files/reviews/checks (for closed PRs with complete data)
-            api_call_counter: Optional dict to track API calls (keys: 'files', 'reviews', 'commits', 'checks')
         """
-        # Initialize counter if not provided
-        if api_call_counter is None:
-            api_call_counter = {'files': 0, 'reviews': 0, 'commits': 0, 'checks': 0}
-        
         try:
             # Handle GitHub 404 errors (deleted PRs)
             try:
@@ -375,14 +400,23 @@ class GitHubService:
             
             # 1. Create/get trainer (user)
             trainer = self.get_or_create_user(pr.user.login, 'trainer', db)
+            if not trainer:
+                logger.error(f"PR {pr.number}: Failed to create/get trainer {pr.user.login}")
+                return None
             db_pr.trainer_id = trainer.id
             
             # 2. Create/get domain
             domain = self.get_or_create_domain(parsed['domain'], db)
+            if not domain:
+                logger.error(f"PR {pr.number}: Failed to create/get domain {parsed['domain']}")
+                return None
             db_pr.domain_id = domain.id
             
             # 3. Create/get interface (linked to domain)
             interface = self.get_or_create_interface(domain, parsed['interface_num'], db)
+            if not interface:
+                logger.error(f"PR {pr.number}: Failed to create/get interface {parsed['interface_num']} for domain {parsed['domain']}")
+                return None
             db_pr.interface_id = interface.id
             
             # 4. Parse and create/get week and pod from PR file changes
@@ -396,14 +430,20 @@ class GitHubService:
                 # 1. Not skipping nested data (full sync needed)
                 # 2. AND (PR doesn't have week_id OR doesn't have pod_id)
                 week_pod_info = self.parse_week_pod_from_pr_files(pr)
-                api_call_counter['files'] += 1  # Track API call
                 if week_pod_info:
                     week_num, pod_name = week_pod_info
                     week = self.get_or_create_week(week_num, db)
                     pod = self.get_or_create_pod(pod_name, db)
-                    db_pr.week_id = week.id
-                    db_pr.pod_id = pod.id
-                    logger.debug(f"PR #{pr.number}: Parsed week/pod from files")
+                    
+                    if week and pod:
+                        db_pr.week_id = week.id
+                        db_pr.pod_id = pod.id
+                        logger.debug(f"PR #{pr.number}: Parsed week/pod from files")
+                    else:
+                        if not week:
+                            logger.warning(f"PR {pr.number}: Failed to create/get week {week_num}")
+                        if not pod:
+                            logger.warning(f"PR {pr.number}: Failed to create/get pod {pod_name}")
                 else:
                     logger.debug(f"PR #{pr.number}: No week/pod found in file paths")
             else:
@@ -445,8 +485,8 @@ class GitHubService:
             # Now sync reviews and check runs (they need db_pr.id to be set)
             # Optimization: Skip if we're doing a quick update (skip_nested_data=True)
             if not skip_nested_data:
-                self.sync_reviews(pr, db_pr, db, api_call_counter)
-                self.sync_check_runs(pr, db_pr, db, api_call_counter)
+                self.sync_reviews(pr, db_pr, db)
+                self.sync_check_runs(pr, db_pr, db)
             else:
                 logger.debug(f"PR #{pr.number}: Skipping reviews/check runs fetch (nested data skipped)")
             
@@ -456,13 +496,9 @@ class GitHubService:
             logger.error(f"Error syncing PR {pr.number}: {str(e)}")
             return None
     
-    def sync_reviews(self, pr, db_pr: PullRequest, db: Session, api_call_counter: dict = None):
+    def sync_reviews(self, pr, db_pr: PullRequest, db: Session):
         """Sync reviews for a pull request."""
-        if api_call_counter is None:
-            api_call_counter = {'reviews': 0}
-        
         try:
-            api_call_counter['reviews'] += 1  # Track API call for pr.get_reviews()
             for review in pr.get_reviews():
                 # Create/get reviewer user (default role: pod_lead, can be updated later)
                 reviewer = self.get_or_create_user(review.user.login, 'pod_lead', db)
@@ -492,17 +528,11 @@ class GitHubService:
         except Exception as e:
             logger.error(f"Error syncing reviews for PR {pr.number}: {str(e)}")
     
-    def sync_check_runs(self, pr, db_pr: PullRequest, db: Session, api_call_counter: dict = None):
+    def sync_check_runs(self, pr, db_pr: PullRequest, db: Session):
         """Sync check runs for a pull request."""
-        if api_call_counter is None:
-            api_call_counter = {'commits': 0, 'checks': 0}
-        
         try:
             # Get check runs from the head commit (not from PR directly)
-            api_call_counter['commits'] += 1  # Track API call for get_commit()
             commit = self.repo.get_commit(pr.head.sha)
-            
-            api_call_counter['checks'] += 1  # Track API call for get_check_runs()
             check_runs = commit.get_check_runs()
             
             check_failures = 0
@@ -546,7 +576,6 @@ class GitHubService:
         # Sync ALL open PRs
         logger.info("Syncing all OPEN PRs...")
         pull_requests = self.repo.get_pulls(state='open', sort='created', direction='asc')
-        import pdb; pdb.set_trace()
         for pr in pull_requests:
             total_checked += 1
             if self.sync_pull_request(pr, db):
@@ -1053,15 +1082,6 @@ class GitHubService:
         checked_count = 0
         quick_updates = 0
         
-        # Track API calls
-        api_calls = {
-            'pagination': 0,
-            'files': 0,
-            'reviews': 0,
-            'commits': 0,
-            'checks': 0
-        }
-        
         # Ensure last_sync is timezone-aware
         if last_sync.tzinfo is None:
             last_sync = last_sync.replace(tzinfo=timezone.utc)
@@ -1069,7 +1089,7 @@ class GitHubService:
         logger.info(f"Starting incremental sync for PRs updated after {last_sync}")
         
         # Get recently updated PRs - explicitly sort by updated date descending
-        # Note: PyGithub handles pagination automatically (30 PRs per page by default)
+        # Note: PyGithub handles pagination automatically (100 PRs per page - set in __init__)
         try:
             for pr in self.repo.get_pulls(
                 state='all', 
@@ -1077,10 +1097,6 @@ class GitHubService:
                 direction='desc'
             ):
                 checked_count += 1
-                
-                # Track pagination API calls (GitHub returns 30 PRs per page by default)
-                if checked_count % 30 == 1:  # First PR of each page
-                    api_calls['pagination'] += 1
                 
                 # Check if PR was updated after last sync
                 if pr.updated_at <= last_sync:
@@ -1132,7 +1148,7 @@ class GitHubService:
                         continue
                     
                     # Sync with appropriate flags
-                    if self.sync_pull_request(pr, db, skip_nested_data=skip_nested, api_call_counter=api_calls):
+                    if self.sync_pull_request(pr, db, skip_nested_data=skip_nested):
                         if skip_nested:
                             quick_updates += 1
                         else:
@@ -1140,18 +1156,16 @@ class GitHubService:
                         
                         if (synced_count + quick_updates) % 10 == 0:
                             db.commit()
-                            total_api_calls = sum(api_calls.values())
-                            logger.info(f"Incremental sync progress: {synced_count} full, {quick_updates} quick, {skipped_count} skipped (checked {checked_count}) | API calls: {total_api_calls}")
+                            logger.info(f"Incremental sync progress: {synced_count} full, {quick_updates} quick, {skipped_count} skipped (checked {checked_count})")
                     else:
                         skipped_count += 1
                 else:
                     # New PR - do full sync
-                    if self.sync_pull_request(pr, db, api_call_counter=api_calls):
+                    if self.sync_pull_request(pr, db):
                         synced_count += 1
                         if synced_count % 10 == 0:
                             db.commit()
-                            total_api_calls = sum(api_calls.values())
-                            logger.info(f"Incremental sync progress: {synced_count} new PRs synced | API calls: {total_api_calls}")
+                            logger.info(f"Incremental sync progress: {synced_count} new PRs synced")
                     else:
                         skipped_count += 1
                 
@@ -1167,11 +1181,7 @@ class GitHubService:
         
         db.commit()
         
-        # Calculate total API calls
-        total_api_calls = sum(api_calls.values())
-        
         logger.info(f"✅ Incremental sync complete: {synced_count} full syncs, {quick_updates} quick updates, {skipped_count} skipped, {checked_count} checked total")
-        logger.info(f"📊 API calls breakdown: Total={total_api_calls} (pagination={api_calls['pagination']}, files={api_calls['files']}, reviews={api_calls['reviews']}, commits={api_calls['commits']}, checks={api_calls['checks']})")
         
         # Update metrics if we synced any PRs
         if synced_count > 0 or quick_updates > 0:
