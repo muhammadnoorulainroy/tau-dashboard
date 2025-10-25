@@ -546,7 +546,6 @@ class GitHubService:
         # Sync ALL open PRs
         logger.info("Syncing all OPEN PRs...")
         pull_requests = self.repo.get_pulls(state='open', sort='created', direction='asc')
-        import pdb; pdb.set_trace()
         for pr in pull_requests:
             total_checked += 1
             if self.sync_pull_request(pr, db):
