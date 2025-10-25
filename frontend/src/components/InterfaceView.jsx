@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE_URL } from '../services/api.config';
+import SearchableDropdown from './SearchableDropdown';
 import {
   CubeIcon,
   ChartBarIcon,
@@ -172,18 +173,27 @@ const InterfaceView = ({ lastUpdate }) => {
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Trainer
             </label>
-            <select
-              value={activeFilters.trainer_id || ''}
-              onChange={(e) => setActiveFilters({ ...activeFilters, trainer_id: e.target.value ? parseInt(e.target.value) : null })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">All Trainers</option>
-              {trainers.map((trainer) => (
-                <option key={trainer.id} value={trainer.id}>
-                  {trainer.username}
-                </option>
-              ))}
-            </select>
+            <SearchableDropdown
+              options={trainers}
+              value={activeFilters.trainer_id}
+              onChange={(trainerId) => setActiveFilters({ ...activeFilters, trainer_id: trainerId })}
+              placeholder="All Trainers"
+              renderOption={(trainer) => (
+                <div className="text-sm">
+                  <div className="font-medium text-gray-900">{trainer.username}</div>
+                  {trainer.email && (
+                    <div className="text-xs text-gray-500">{trainer.email}</div>
+                  )}
+                </div>
+              )}
+              filterOption={(trainer, searchTerm) => {
+                const term = searchTerm.toLowerCase();
+                const username = (trainer.username || '').toLowerCase();
+                const email = (trainer.email || '').toLowerCase();
+                return username.includes(term) || email.includes(term);
+              }}
+              emptyText="No trainers found"
+            />
           </div>
 
           {/* Status Filter (Optional) */}
