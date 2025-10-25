@@ -1866,16 +1866,28 @@ def get_weeks(db: Session = Depends(get_db)):
 
 @app.get("/api/trainers")
 def get_trainers(db: Session = Depends(get_db)):
-    """Get list of all trainers."""
+    """Get list of all trainers with their Turing emails from Google Sheets."""
     try:
-        trainers = db.query(User).filter(User.role == 'trainer').order_by(User.github_username).all()
+        # Join User with DeveloperHierarchy to get Turing emails
+        trainers_query = db.query(
+            User.id,
+            User.github_username,
+            DeveloperHierarchy.turing_email
+        ).outerjoin(
+            DeveloperHierarchy,
+            User.github_username == DeveloperHierarchy.github_user
+        ).filter(
+            User.role == 'trainer'
+        ).order_by(User.github_username).all()
+        
         return {
             'trainers': [
                 {
                     'id': trainer.id,
-                    'username': trainer.github_username
+                    'username': trainer.github_username,
+                    'email': trainer.turing_email  # Real Turing email from Google Sheets
                 }
-                for trainer in trainers
+                for trainer in trainers_query
             ]
         }
     except Exception as e:

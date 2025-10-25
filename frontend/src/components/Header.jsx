@@ -5,7 +5,8 @@ import {
   XMarkIcon, 
   ArrowPathIcon,
   BellIcon,
-  ClockIcon
+  ClockIcon,
+  InformationCircleIcon
 } from '@heroicons/react/24/outline';
 import { triggerSync, refreshDomains } from '../services/api';
 import toast from 'react-hot-toast';
@@ -15,6 +16,28 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
   const [syncingDomains, setSyncingDomains] = React.useState(false);
   const [currentTime, setCurrentTime] = React.useState(new Date());
   const [justUpdated, setJustUpdated] = React.useState(false);
+
+  // Auto-sync interval: 1 hour (3600 seconds)
+  const AUTO_SYNC_INTERVAL_MS = 3600 * 1000; // 1 hour in milliseconds
+
+  // Calculate remaining time until next auto-sync
+  const getRemainingTime = () => {
+    const timeSinceLastSync = currentTime - lastUpdate;
+    const remainingMs = AUTO_SYNC_INTERVAL_MS - timeSinceLastSync;
+    
+    if (remainingMs <= 0) return 'Syncing soon...';
+    
+    const remainingMinutes = Math.floor(remainingMs / 60000);
+    const remainingSeconds = Math.floor((remainingMs % 60000) / 1000);
+    
+    if (remainingMinutes >= 60) {
+      return `Next auto-sync in ${Math.floor(remainingMinutes / 60)}h ${remainingMinutes % 60}m`;
+    } else if (remainingMinutes > 0) {
+      return `Next auto-sync in ${remainingMinutes}m ${remainingSeconds}s`;
+    } else {
+      return `Next auto-sync in ${remainingSeconds}s`;
+    }
+  };
 
   // Update current time every second
   React.useEffect(() => {
@@ -117,9 +140,25 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
                   {format(lastUpdate, 'HH:mm:ss')}
                 </span>
                 <span className="text-[10px] text-gray-500">
-                  {formatDistanceToNow(lastUpdate, { addSuffix: true })}
+                  Synced {formatDistanceToNow(lastUpdate, { addSuffix: true })}
                 </span>
               </div>
+              
+              {/* Info icon with tooltip */}
+              <div className="relative group">
+                <InformationCircleIcon className="h-4 w-4 text-gray-400 hover:text-gray-600 cursor-help" />
+                
+                {/* Tooltip */}
+                <div className="absolute right-0 top-full mt-2 w-48 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+                  <div className="flex flex-col space-y-1">
+                    <span className="font-medium">{getRemainingTime()}</span>
+                    <span className="text-gray-300">Auto-sync runs every hour</span>
+                  </div>
+                  {/* Arrow */}
+                  <div className="absolute right-2 -top-1 w-2 h-2 bg-gray-900 transform rotate-45"></div>
+                </div>
+              </div>
+              
               {justUpdated && (
                 <span className="flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
@@ -128,7 +167,8 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
               )}
             </div>
             
-            <button
+            {/* Sync PRs Button - DISABLED FOR NOW */}
+            {/* <button
               onClick={handleSync}
               disabled={syncing}
               className={`
@@ -141,9 +181,10 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
             >
               <ArrowPathIcon className={`h-4 w-4 mr-1.5 ${syncing ? 'animate-spin' : ''}`} />
               {syncing ? 'Syncing...' : 'Sync PRs'}
-            </button>
+            </button> */}
 
-            <button
+            {/* Sync Domains Button - DISABLED (synced automatically every hour) */}
+            {/* <button
               onClick={handleSyncDomains}
               disabled={syncingDomains}
               className={`
@@ -156,7 +197,7 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate }) => {
             >
               <ArrowPathIcon className={`h-4 w-4 mr-1.5 ${syncingDomains ? 'animate-spin' : ''}`} />
               {syncingDomains ? 'Syncing...' : 'Sync Domains'}
-            </button>
+            </button> */}
             
             <button className="p-2 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500">
               <BellIcon className="h-6 w-6" />
