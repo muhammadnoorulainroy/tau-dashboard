@@ -388,6 +388,9 @@ class GitHubService:
             db_pr.review_count = pr.review_comments
             db_pr.comment_count = pr.comments
             
+            # Parse task execution results from bot comment
+            self.parse_task_execution_results(pr, db_pr)
+            
             # Calculate rework (changes requested reviews only)
             db_pr.rework_count = self.calculate_rework_count(pr, db)
             
@@ -496,6 +499,46 @@ class GitHubService:
             logger.error(f"Error syncing PR {pr.number}: {str(e)}")
             return None
     
+    def parse_task_execution_results(self, pr, db_pr: PullRequest):
+        """
+        Parse task execution results from github-actions bot comment.
+        Extracts: Total Trials, Passed, Failed, Success Rate from the comment body.
+        """
+        try:
+            # Fetch PR comments
+            comments = pr.get_issue_comments()
+            
+            # Find the bot comment with "Task Execution Results Analysis"
+            for comment in comments:
+                if comment.user.login == 'github-actions[bot]' and 'Task Execution Results Analysis' in comment.body:
+                    # Parse the comment body
+                    body = comment.body
+                    
+                    # Extract metrics using regex
+                    import re
+                    
+                    # Look for patterns like: | **Total Trials** | 1 |
+                    total_match = re.search(r'\|\s*\*\*Total Trials\*\*\s*\|\s*(\d+)\s*\|', body)
+                    passed_match = re.search(r'\|\s*\*\*Passed\*\*\s*\|\s*(\d+)\s*\|', body)
+                    failed_match = re.search(r'\|\s*\*\*Failed\*\*\s*\|\s*(\d+)\s*\|', body)
+                    success_rate_match = re.search(r'\|\s*\*\*Success Rate\*\*\s*\|\s*(\d+(?:\.\d+)?)%?\s*\|', body)
+                    
+                    if total_match:
+                        db_pr.task_trials_total = int(total_match.group(1))
+                    if passed_match:
+                        db_pr.task_trials_passed = int(passed_match.group(1))
+                    if failed_match:
+                        db_pr.task_trials_failed = int(failed_match.group(1))
+                    if success_rate_match:
+                        db_pr.task_success_rate = float(success_rate_match.group(1))
+                    
+                    logger.debug(f"PR {pr.number}: Parsed task execution - {db_pr.task_trials_passed}/{db_pr.task_trials_total} passed ({db_pr.task_success_rate}%)")
+                    break  # Found the comment, no need to continue
+                    
+        except Exception as e:
+            logger.debug(f"No task execution results found for PR {pr.number}: {str(e)}")
+            # Not an error - some PRs may not have this comment yet
+    
     def sync_reviews(self, pr, db_pr: PullRequest, db: Session):
         """Sync reviews for a pull request."""
         try:
@@ -535,8 +578,12 @@ class GitHubService:
             commit = self.repo.get_commit(pr.head.sha)
             check_runs = commit.get_check_runs()
             
-            check_failures = 0
+            # Group check runs by name and keep only the latest run of each
+            # This avoids counting reruns multiple times
+            latest_checks = {}
             for check in check_runs:
+                check_name = check.name
+                # Store all checks (for database)
                 db_check = db.query(CheckRun).filter_by(github_id=check.id).first()
                 if not db_check:
                     db_check = CheckRun(
@@ -554,10 +601,35 @@ class GitHubService:
                     db_check.conclusion = check.conclusion
                     db_check.completed_at = check.completed_at
                 
+                # Track only the latest run of each check name for counting
+                if check_name not in latest_checks:
+                    latest_checks[check_name] = check
+                else:
+                    # Keep the one with the latest started time (GitHub's definition of "latest")
+                    # If started times are equal, use GitHub ID (higher ID = later run)
+                    existing = latest_checks[check_name]
+                    existing_started = existing.started_at or existing.completed_at
+                    new_started = check.started_at or check.completed_at
+                    
+                    if new_started and existing_started:
+                        if new_started > existing_started:
+                            latest_checks[check_name] = check
+                        elif new_started == existing_started and check.id > existing.id:
+                            latest_checks[check_name] = check
+                    elif new_started:  # existing has no time
+                        latest_checks[check_name] = check
+            
+            # Count only the latest run of each check
+            check_failures = 0
+            check_passes = 0
+            for check in latest_checks.values():
                 if check.conclusion == 'failure':
                     check_failures += 1
+                elif check.conclusion == 'success':
+                    check_passes += 1
             
             db_pr.check_failures = check_failures
+            db_pr.check_passes = check_passes
         except Exception as e:
             logger.error(f"Error syncing check runs for PR {pr.number}: {str(e)}")
     

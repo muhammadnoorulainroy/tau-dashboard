@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, Float
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
@@ -11,7 +11,7 @@ import logging
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState, DeveloperHierarchy, User, Domain, Interface, Week, Pod, Review, InterfaceMetrics
+from database import get_db, init_db, PullRequest, Developer, Reviewer, DomainMetrics, SyncState, DeveloperHierarchy, User, Domain, Interface, Week, Pod, Review, InterfaceMetrics, CheckRun
 from github_service import GitHubService
 from google_sheets_service import GoogleSheetsService
 from sync_state import should_do_full_sync, get_last_sync_time, get_sync_description
@@ -242,13 +242,9 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
             PullRequest.created_at.desc()
         ).limit(10).all()
         
-        # Get last sync time
+        # Get last sync time (after migration, this is TIMESTAMPTZ and already timezone-aware)
         sync_state = db.query(SyncState).first()
         last_sync_time = sync_state.last_sync_time if sync_state else None
-        
-        # Ensure timezone-aware last_sync_time
-        if last_sync_time and last_sync_time.tzinfo is None:
-            last_sync_time = last_sync_time.replace(tzinfo=timezone.utc)
         
         return DashboardOverview(
             total_prs=total_prs,
@@ -275,6 +271,7 @@ def get_developer_metrics(
     limit: int = 200,  # Increased default limit
     offset: int = 0,
     sort_by: str = "total_prs",
+    sort_order: str = "desc",  # 'asc' or 'desc'
     search: str = None,
     domain: str = None,
     db: Session = Depends(get_db)
@@ -298,24 +295,39 @@ def get_developer_metrics(
                 PullRequest.domain == domain
             ).group_by(PullRequest.developer_username)
             
-            # Apply search filter
+            # Apply search filter (by username or email)
             if search:
-                pr_query = pr_query.filter(PullRequest.developer_username.ilike(f"%{search}%"))
+                # Find github users with matching email
+                matching_users = db.query(DeveloperHierarchy.github_user).filter(
+                    DeveloperHierarchy.turing_email.ilike(f'%{search}%')
+                ).all()
+                github_usernames = [user[0] for user in matching_users] if matching_users else []
+                
+                # Filter by username or matching github usernames
+                from sqlalchemy import or_
+                conditions = [PullRequest.developer_username.ilike(f"%{search}%")]
+                if github_usernames:
+                    conditions.append(PullRequest.developer_username.in_(github_usernames))
+                pr_query = pr_query.filter(or_(*conditions))
             
             # Get all results for sorting and pagination
             results = pr_query.all()
             
-            # Sort results
+            # Sort results (reverse=True for desc, reverse=False for asc)
+            reverse_order = (sort_order.lower() == "desc")
+            
             if sort_by == "total_prs":
-                results = sorted(results, key=lambda x: x.total_prs or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.total_prs or 0, reverse=reverse_order)
             elif sort_by == "open_prs":
-                results = sorted(results, key=lambda x: x.open_prs or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.open_prs or 0, reverse=reverse_order)
             elif sort_by == "merged_prs":
-                results = sorted(results, key=lambda x: x.merged_prs or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.merged_prs or 0, reverse=reverse_order)
             elif sort_by == "closed_prs":
-                results = sorted(results, key=lambda x: x.closed_prs or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.closed_prs or 0, reverse=reverse_order)
             elif sort_by == "total_rework":
-                results = sorted(results, key=lambda x: x.total_rework or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.total_rework or 0, reverse=reverse_order)
+            elif sort_by == "avg_rework":
+                results = sorted(results, key=lambda x: x.avg_rework or 0, reverse=reverse_order)
             
             total = len(results)
             
@@ -367,24 +379,46 @@ def get_developer_metrics(
         # No domain filter - return global stats from Developer table with enriched metrics
         query = db.query(Developer)
         
-        # Apply search filter (by username)
+        # Apply search filter (by username or email)
         if search:
-            query = query.filter(Developer.username.ilike(f"%{search}%"))
+            # Find github users with matching email
+            matching_users = db.query(DeveloperHierarchy.github_user).filter(
+                DeveloperHierarchy.turing_email.ilike(f'%{search}%')
+            ).all()
+            github_usernames = [user[0] for user in matching_users] if matching_users else []
+            
+            # Filter by username or matching github usernames
+            from sqlalchemy import or_
+            conditions = [Developer.username.ilike(f"%{search}%")]
+            if github_usernames:
+                conditions.append(Developer.username.in_(github_usernames))
+            query = query.filter(or_(*conditions))
         
         # Get total count after filters
         total = query.count()
         
-        # Apply sorting
+        # Apply sorting with order direction
+        from sqlalchemy import desc, asc, Float
+        order_func = desc if sort_order.lower() == "desc" else asc
+        
         if sort_by == "total_prs":
-            query = query.order_by(Developer.total_prs.desc())
+            query = query.order_by(order_func(Developer.total_prs))
         elif sort_by == "open_prs":
-            query = query.order_by(Developer.open_prs.desc())
+            query = query.order_by(order_func(Developer.open_prs))
         elif sort_by == "merged_prs":
-            query = query.order_by(Developer.merged_prs.desc())
+            query = query.order_by(order_func(Developer.merged_prs))
         elif sort_by == "closed_prs":
-            query = query.order_by(Developer.closed_prs.desc())
+            query = query.order_by(order_func(Developer.closed_prs))
         elif sort_by == "total_rework":
-            query = query.order_by(Developer.total_rework.desc())
+            query = query.order_by(order_func(Developer.total_rework))
+        elif sort_by == "avg_rework":
+            # Calculate avg_rework as total_rework / total_prs
+            # Use NULLIF to avoid division by zero
+            from sqlalchemy import text
+            if sort_order.lower() == "desc":
+                query = query.order_by(text("(CAST(developers.total_rework AS FLOAT) / NULLIF(developers.total_prs, 0)) DESC NULLS LAST"))
+            else:
+                query = query.order_by(text("(CAST(developers.total_rework AS FLOAT) / NULLIF(developers.total_prs, 0)) ASC NULLS LAST"))
         
         # Apply pagination
         developers = query.offset(offset).limit(limit).all()
@@ -415,6 +449,9 @@ def get_developer_metrics(
                 PullRequest.developer_username == developer.username
             ).distinct()
             developer_dict['metrics']['domains'] = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+            
+            # Calculate avg_rework (total_rework / total_prs)
+            developer_dict['metrics']['avg_rework'] = round(developer.total_rework / developer.total_prs, 2) if developer.total_prs > 0 else 0.0
             
             enriched_developers.append(developer_dict)
         
@@ -455,6 +492,7 @@ def get_reviewer_metrics(
     limit: int = 200,  # Increased default limit
     offset: int = 0,
     sort_by: str = "total_reviews",
+    sort_order: str = "desc",  # 'asc' or 'desc'
     search: str = None,
     domain: str = None,
     db: Session = Depends(get_db)
@@ -479,20 +517,36 @@ def get_reviewer_metrics(
                 PullRequest.domain == domain
             ).group_by(Review.reviewer_login)
             
-            # Apply search filter
+            # Apply search filter (by username or email)
             if search:
-                review_query = review_query.filter(Review.reviewer_login.ilike(f"%{search}%"))
+                # Find github users with matching email
+                matching_users = db.query(DeveloperHierarchy.github_user).filter(
+                    DeveloperHierarchy.turing_email.ilike(f'%{search}%')
+                ).all()
+                github_usernames = [user[0] for user in matching_users] if matching_users else []
+                
+                # Filter by username or matching github usernames
+                from sqlalchemy import or_
+                conditions = [Review.reviewer_login.ilike(f"%{search}%")]
+                if github_usernames:
+                    conditions.append(Review.reviewer_login.in_(github_usernames))
+                review_query = review_query.filter(or_(*conditions))
             
             # Get all results for sorting and pagination
             results = review_query.all()
             
-            # Sort results
+            # Sort results (reverse=True for desc, reverse=False for asc)
+            reverse_order = (sort_order.lower() == "desc")
+            
             if sort_by == "total_reviews":
-                results = sorted(results, key=lambda x: x.total_reviews or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.total_reviews or 0, reverse=reverse_order)
             elif sort_by == "approved_reviews":
-                results = sorted(results, key=lambda x: x.approved_reviews or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.approved_reviews or 0, reverse=reverse_order)
             elif sort_by == "changes_requested":
-                results = sorted(results, key=lambda x: x.changes_requested or 0, reverse=True)
+                results = sorted(results, key=lambda x: x.changes_requested or 0, reverse=reverse_order)
+            elif sort_by == "approval_rate":
+                # Calculate approval rate for sorting: (approved / total) * 100
+                results = sorted(results, key=lambda x: (x.approved_reviews / x.total_reviews * 100) if x.total_reviews > 0 else 0, reverse=reverse_order)
             
             total = len(results)
             
@@ -564,20 +618,41 @@ def get_reviewer_metrics(
         # No domain filter - return global stats from Reviewer table with enriched metrics
         query = db.query(Reviewer)
         
-        # Apply search filter (by username)
+        # Apply search filter (by username or email)
         if search:
-            query = query.filter(Reviewer.username.ilike(f"%{search}%"))
+            # Find github users with matching email
+            matching_users = db.query(DeveloperHierarchy.github_user).filter(
+                DeveloperHierarchy.turing_email.ilike(f'%{search}%')
+            ).all()
+            github_usernames = [user[0] for user in matching_users] if matching_users else []
+            
+            # Filter by username or matching github usernames
+            from sqlalchemy import or_
+            conditions = [Reviewer.username.ilike(f"%{search}%")]
+            if github_usernames:
+                conditions.append(Reviewer.username.in_(github_usernames))
+            query = query.filter(or_(*conditions))
         
         # Get total count after filters
         total = query.count()
         
-        # Apply sorting
+        # Apply sorting with order direction
+        from sqlalchemy import desc, asc, text
+        order_func = desc if sort_order.lower() == "desc" else asc
+        
         if sort_by == "total_reviews":
-            query = query.order_by(Reviewer.total_reviews.desc())
+            query = query.order_by(order_func(Reviewer.total_reviews))
         elif sort_by == "approved_reviews":
-            query = query.order_by(Reviewer.approved_reviews.desc())
+            query = query.order_by(order_func(Reviewer.approved_reviews))
         elif sort_by == "changes_requested":
-            query = query.order_by(Reviewer.changes_requested.desc())
+            query = query.order_by(order_func(Reviewer.changes_requested))
+        elif sort_by == "approval_rate":
+            # Calculate approval rate: (approved_reviews / total_reviews) * 100
+            # Use NULLIF to avoid division by zero
+            if sort_order.lower() == "desc":
+                query = query.order_by(text("(CAST(reviewers.approved_reviews AS FLOAT) / NULLIF(reviewers.total_reviews, 0) * 100) DESC NULLS LAST"))
+            else:
+                query = query.order_by(text("(CAST(reviewers.approved_reviews AS FLOAT) / NULLIF(reviewers.total_reviews, 0) * 100) ASC NULLS LAST"))
         
         # Apply pagination
         reviewers = query.offset(offset).limit(limit).all()
@@ -611,6 +686,9 @@ def get_reviewer_metrics(
                 Review.reviewer_login == reviewer.username
             ).distinct()
             reviewer_dict['metrics']['domains'] = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+            
+            # Calculate approval rate (approved / total * 100)
+            reviewer_dict['metrics']['approval_rate'] = round((reviewer.approved_reviews / reviewer.total_reviews * 100), 2) if reviewer.total_reviews > 0 else 0.0
             
             # Add recent reviews
             recent_reviews = db.query(Review).join(
@@ -661,8 +739,9 @@ def get_statuses_list(db: Session = Depends(get_db)):
 
 @app.get("/api/domains", response_model=List[DomainMetricsResponse])
 def get_domain_metrics(db: Session = Depends(get_db)):
-    """Get metrics for allowed domains only, sorted by GitHub creation date (newest first)."""
+    """Get metrics for ALL allowed domains (includes domains with 0 PRs), sorted by GitHub creation date (newest first)."""
     from database import Domain
+    from datetime import datetime, timezone
     try:
         # Get domains with GitHub creation dates for sorting
         domain_order = db.query(Domain).filter(
@@ -670,18 +749,45 @@ def get_domain_metrics(db: Session = Depends(get_db)):
             Domain.is_active == True
         ).order_by(Domain.github_created_at.desc().nullslast()).all()
         
-        # Create ordering map
+        # Create ordering map and domain DB map
         domain_order_map = {d.domain_name: idx for idx, d in enumerate(domain_order)}
+        domain_db_map = {d.domain_name: d for d in domain_order}
         
-        # Get domain metrics
-        domains = db.query(DomainMetrics).filter(
+        # Get domain metrics for domains that have PRs
+        metrics_list = db.query(DomainMetrics).filter(
             DomainMetrics.domain.in_(settings.allowed_domains)
         ).all()
+        metrics_map = {m.domain: m for m in metrics_list}
+        
+        # Build result list - include ALL allowed domains (even those with 0 PRs)
+        result = []
+        for domain_name in settings.allowed_domains:
+            if domain_name in metrics_map:
+                # Domain has metrics, use them
+                result.append(DomainMetricsResponse.from_orm(metrics_map[domain_name]))
+            else:
+                # Domain has no PRs yet, create empty metrics
+                domain_db = domain_db_map.get(domain_name)
+                result.append(DomainMetricsResponse(
+                    id=domain_db.id if domain_db else 0,
+                    domain=domain_name,
+                    total_tasks=0,
+                    expert_review_pending=0,
+                    calibrator_review_pending=0,
+                    expert_approved=0,
+                    ready_to_merge=0,
+                    merged=0,
+                    expert_count=0,
+                    hard_count=0,
+                    medium_count=0,
+                    last_updated=datetime.now(timezone.utc),
+                    detailed_metrics={'developers': {}, 'recent_prs': []}
+                ))
         
         # Sort by GitHub creation date using the order map
-        domains.sort(key=lambda x: domain_order_map.get(x.domain, 999))
+        result.sort(key=lambda x: domain_order_map.get(x.domain, 999))
         
-        return [DomainMetricsResponse.from_orm(dom) for dom in domains]
+        return result
     except Exception as e:
         logger.error(f"Error getting domain metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -857,11 +963,94 @@ def get_pull_requests(
             query = query.filter_by(domain=domain)
         
         if developer:
-            query = query.filter_by(developer_username=developer)
+            # Search by developer_username, author_login, or turing_email
+            from sqlalchemy import or_
+            
+            # Find github users with matching turing_email
+            matching_github_users = db.query(DeveloperHierarchy.github_user).filter(
+                DeveloperHierarchy.turing_email.ilike(f'%{developer}%')
+            ).all()
+            github_usernames = [user[0] for user in matching_github_users] if matching_github_users else []
+            
+            # Filter by developer_username, author_login, or matching github_usernames
+            conditions = [
+                PullRequest.developer_username.ilike(f'%{developer}%'),
+                PullRequest.author_login.ilike(f'%{developer}%')
+            ]
+            if github_usernames:
+                conditions.append(PullRequest.author_login.in_(github_usernames))
+            
+            query = query.filter(or_(*conditions))
         
         prs = query.order_by(PullRequest.created_at.desc()).offset(offset).limit(limit).all()
         
-        return [PullRequestResponse.from_orm(pr) for pr in prs]
+        # Enrich PRs with turing_email
+        result = []
+        for pr in prs:
+            pr_dict = {
+                'id': pr.id,
+                'github_id': pr.github_id,
+                'number': pr.number,
+                'title': pr.title,
+                'state': pr.state,
+                'merged': pr.merged,
+                'developer_username': pr.developer_username,
+                'domain': pr.domain,
+                'difficulty': pr.difficulty,
+                'task_id': pr.task_id,
+                'author_login': pr.author_login,
+                'author_email': pr.author_email,
+                'created_at': pr.created_at,
+                'updated_at': pr.updated_at,
+                'closed_at': pr.closed_at,
+                'merged_at': pr.merged_at,
+                'labels': pr.labels or [],
+                'review_count': pr.review_count,
+                'comment_count': pr.comment_count,
+                'rework_count': pr.rework_count,
+                'check_failures': pr.check_failures,
+                'check_passes': pr.check_passes,  # Now stored in DB, calculated during sync
+                'failed_check_names': [],
+                'task_trials_total': pr.task_trials_total,
+                'task_trials_passed': pr.task_trials_passed,
+                'task_trials_failed': pr.task_trials_failed,
+                'task_success_rate': pr.task_success_rate,
+                'turing_email': None
+            }
+            
+            # Fetch turing_email from DeveloperHierarchy
+            if pr.author_login:
+                hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=pr.author_login).first()
+                if hierarchy and hierarchy.turing_email:
+                    pr_dict['turing_email'] = hierarchy.turing_email
+            
+            # Fetch failed check names
+            if pr.check_failures > 0:
+                failed_checks = db.query(CheckRun).filter_by(
+                    pull_request_id=pr.id,
+                    conclusion='failure'
+                ).all()
+                
+                # Group by name and keep only the latest (by started_at or id)
+                from collections import OrderedDict
+                latest_failed = OrderedDict()
+                for check in failed_checks:
+                    if check.name not in latest_failed:
+                        latest_failed[check.name] = check
+                    else:
+                        existing = latest_failed[check.name]
+                        # Keep the one with latest started_at
+                        if check.started_at and existing.started_at:
+                            if check.started_at > existing.started_at:
+                                latest_failed[check.name] = check
+                        elif check.id > existing.id:
+                            latest_failed[check.name] = check
+                
+                pr_dict['failed_check_names'] = list(latest_failed.keys())
+            
+            result.append(PullRequestResponse.model_construct(**pr_dict))
+        
+        return result
     except Exception as e:
         logger.error(f"Error getting pull requests: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -929,10 +1118,36 @@ async def trigger_sync(
     try:
         from config import settings
         
-        # Get sync info before starting
-        sync_desc = get_sync_description(db, request.since_days)
+        # Determine sync type and description
         do_full_sync = request.force_full or should_do_full_sync(db, request.since_days)
         sync_type = "full" if do_full_sync else "incremental"
+        
+        # Generate accurate description based on actual sync type
+        if do_full_sync:
+            sync_state = db.query(SyncState).first()
+            pr_count = db.query(func.count(PullRequest.id)).scalar()
+            
+            if request.force_full:
+                sync_desc = f"Full re-sync - updating all PRs from last {request.since_days} days"
+            elif not sync_state or not sync_state.last_sync_time:
+                if pr_count == 0:
+                    sync_desc = f"Initial sync - fetching last {request.since_days} days"
+                else:
+                    sync_desc = f"Full sync - fetching last {request.since_days} days"
+            else:
+                sync_desc = f"Full sync - fetching last {request.since_days} days (last sync was over 7 days ago)"
+        else:
+            sync_state = db.query(SyncState).first()
+            if sync_state and sync_state.last_sync_time:
+                minutes_ago = int((datetime.now(timezone.utc) - sync_state.last_sync_time).total_seconds() / 60)
+                if minutes_ago < 60:
+                    time_str = f"last {minutes_ago} minute{'s' if minutes_ago != 1 else ''}"
+                else:
+                    hours_ago = minutes_ago // 60
+                    time_str = f"last {hours_ago} hour{'s' if hours_ago != 1 else ''}"
+                sync_desc = f"Incremental sync - fetching updates from {time_str}"
+            else:
+                sync_desc = "Incremental sync - fetching recent updates"
         
         # Background task to run sync and notify when done
         async def run_sync_and_notify():

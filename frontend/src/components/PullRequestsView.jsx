@@ -103,7 +103,8 @@ const PullRequestsView = ({ lastUpdate }) => {
       const searchLower = filters.search.toLowerCase();
       return pr.title.toLowerCase().includes(searchLower) ||
              pr.developer_username?.toLowerCase().includes(searchLower) ||
-             pr.author_login.toLowerCase().includes(searchLower);
+             pr.author_login.toLowerCase().includes(searchLower) ||
+             pr.turing_email?.toLowerCase().includes(searchLower);
     }
     return true;
   });
@@ -174,7 +175,7 @@ const PullRequestsView = ({ lastUpdate }) => {
 
             <input
               type="text"
-              placeholder="Developer username..."
+              placeholder="Developer email or username..."
               value={filters.developer}
               onChange={(e) => handleFilterChange('developer', e.target.value)}
               className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
@@ -215,6 +216,12 @@ const PullRequestsView = ({ lastUpdate }) => {
                   Rework
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Failed Checks
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Task Success
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Created
                 </th>
               </tr>
@@ -233,8 +240,17 @@ const PullRequestsView = ({ lastUpdate }) => {
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm text-gray-900">{pr.developer_username || 'N/A'}</div>
-                    <div className="text-sm text-gray-500">@{pr.author_login}</div>
+                    {pr.turing_email ? (
+                      <>
+                        <div className="text-sm text-gray-900">{pr.turing_email}</div>
+                        <div className="text-sm text-gray-500">@{pr.author_login}</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-sm text-gray-900">{pr.developer_username || 'N/A'}</div>
+                        <div className="text-sm text-gray-500">@{pr.author_login}</div>
+                      </>
+                    )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
@@ -272,6 +288,52 @@ const PullRequestsView = ({ lastUpdate }) => {
                     }`}>
                       {pr.rework_count}
                     </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-wrap gap-1">
+                      {pr.failed_check_names && pr.failed_check_names.length > 0 ? (
+                        <>
+                          {pr.failed_check_names.slice(0, 3).map((checkName, idx) => (
+                            <span
+                              key={idx}
+                              className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800"
+                            >
+                              {checkName}
+                            </span>
+                          ))}
+                          {pr.failed_check_names.length > 3 && (
+                            <span
+                              title={pr.failed_check_names.slice(3).join(', ')}
+                              className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 cursor-help"
+                            >
+                              +{pr.failed_check_names.length - 3}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                          None
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    {pr.task_trials_total > 0 ? (
+                      <div className="flex flex-col items-center">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          pr.task_success_rate === 100 ? 'bg-green-100 text-green-800' :
+                          pr.task_success_rate >= 50 ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {pr.task_success_rate}%
+                        </span>
+                        <span className="text-xs text-gray-500 mt-1">
+                          {pr.task_trials_passed}/{pr.task_trials_total}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-400">N/A</span>
+                    )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {format(new Date(pr.created_at), 'MMM d, yyyy')}

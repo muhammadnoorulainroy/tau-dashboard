@@ -50,12 +50,12 @@ const DeveloperView = ({ lastUpdate }) => {
     setDevelopers([]);
     setIsFiltering(true);
     fetchDevelopers();
-  }, [lastUpdate, sortBy, debouncedSearchTerm, selectedDomain, page, limit]);
+  }, [lastUpdate, sortBy, sortOrder, debouncedSearchTerm, selectedDomain, page, limit]);
   
   // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [sortBy, debouncedSearchTerm, selectedDomain]);
+  }, [sortBy, sortOrder, debouncedSearchTerm, selectedDomain]);
 
   const fetchDomains = async () => {
     try {
@@ -76,12 +76,14 @@ const DeveloperView = ({ lastUpdate }) => {
       const offset = (page - 1) * limit;
       const params = { 
         sort_by: sortBy,
+        sort_order: sortOrder,  // Send sort order to API
         limit: limit,
         offset: offset
       };
       if (debouncedSearchTerm) params.search = debouncedSearchTerm;
       if (selectedDomain) params.domain = selectedDomain;
       
+      console.log('Fetching developers with params:', params);
       const response = await axios.get(`${API_BASE_URL}/developers`, { params });
       // Always replace data, never append
       setDevelopers(response.data.data || []);
@@ -139,7 +141,7 @@ const DeveloperView = ({ lastUpdate }) => {
 
         {/* Search and Filters */}
         <div className="card">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Search Bar */}
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -170,6 +172,42 @@ const DeveloperView = ({ lastUpdate }) => {
                     {domain.name}
                   </option>
                 ))}
+              </select>
+            </div>
+
+            {/* Sort By Dropdown */}
+            <div className="relative">
+              <select
+                value={`${sortBy}_${sortOrder}`}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  const lastUnderscoreIndex = value.lastIndexOf('_');
+                  const newSortBy = value.substring(0, lastUnderscoreIndex);
+                  const newSortOrder = value.substring(lastUnderscoreIndex + 1);
+                  console.log(`Dropdown changed: "${value}" → sortBy="${newSortBy}", sortOrder="${newSortOrder}"`);
+                  setSortBy(newSortBy);
+                  setSortOrder(newSortOrder);
+                }}
+                className="block w-full px-3 py-2 border border-gray-300 rounded-md leading-5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              >
+                <optgroup label="Total PRs">
+                  <option value="total_prs_desc">Total PRs (High to Low)</option>
+                  <option value="total_prs_asc">Total PRs (Low to High)</option>
+                </optgroup>
+                <optgroup label="Rework">
+                  <option value="total_rework_desc">Total Rework (High to Low)</option>
+                  <option value="total_rework_asc">Total Rework (Low to High)</option>
+                  <option value="avg_rework_desc">Avg Rework (High to Low)</option>
+                  <option value="avg_rework_asc">Avg Rework (Low to High)</option>
+                </optgroup>
+                <optgroup label="Status">
+                  <option value="open_prs_desc">Open PRs (High to Low)</option>
+                  <option value="open_prs_asc">Open PRs (Low to High)</option>
+                  <option value="merged_prs_desc">Merged PRs (High to Low)</option>
+                  <option value="merged_prs_asc">Merged PRs (Low to High)</option>
+                  <option value="closed_prs_desc">Closed PRs (High to Low)</option>
+                  <option value="closed_prs_asc">Closed PRs (Low to High)</option>
+                </optgroup>
               </select>
             </div>
           </div>

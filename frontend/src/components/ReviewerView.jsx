@@ -49,12 +49,12 @@ const ReviewerView = ({ lastUpdate }) => {
     setReviewers([]);
     setIsFiltering(true);
     fetchReviewers();
-  }, [lastUpdate, sortBy, debouncedSearchTerm, selectedDomain, page, limit]);
+  }, [lastUpdate, sortBy, sortOrder, debouncedSearchTerm, selectedDomain, page, limit]);
   
   // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [sortBy, debouncedSearchTerm, selectedDomain]);
+  }, [sortBy, sortOrder, debouncedSearchTerm, selectedDomain]);
 
   const fetchDomains = async () => {
     try {
@@ -75,6 +75,7 @@ const ReviewerView = ({ lastUpdate }) => {
       const offset = (page - 1) * limit;
       const params = { 
         sort_by: sortBy,
+        sort_order: sortOrder,  // Send sort order to API
         limit: limit,
         offset: offset
       };
@@ -138,7 +139,7 @@ const ReviewerView = ({ lastUpdate }) => {
 
         {/* Search and Filters */}
         <div className="card">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Search Bar */}
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -169,6 +170,37 @@ const ReviewerView = ({ lastUpdate }) => {
                     {domain.name}
                   </option>
                 ))}
+              </select>
+            </div>
+
+            {/* Sort By Dropdown */}
+            <div className="relative">
+              <select
+                value={`${sortBy}_${sortOrder}`}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  const lastUnderscoreIndex = value.lastIndexOf('_');
+                  const newSortBy = value.substring(0, lastUnderscoreIndex);
+                  const newSortOrder = value.substring(lastUnderscoreIndex + 1);
+                  setSortBy(newSortBy);
+                  setSortOrder(newSortOrder);
+                }}
+                className="block w-full px-3 py-2 border border-gray-300 rounded-md leading-5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              >
+                <optgroup label="Total Reviews">
+                  <option value="total_reviews_desc">Total Reviews (High to Low)</option>
+                  <option value="total_reviews_asc">Total Reviews (Low to High)</option>
+                </optgroup>
+                <optgroup label="Review Types">
+                  <option value="approved_reviews_desc">Approved Reviews (High to Low)</option>
+                  <option value="approved_reviews_asc">Approved Reviews (Low to High)</option>
+                  <option value="changes_requested_desc">Changes Requested (High to Low)</option>
+                  <option value="changes_requested_asc">Changes Requested (Low to High)</option>
+                </optgroup>
+                <optgroup label="Approval Rate">
+                  <option value="approval_rate_desc">Approval Rate (High to Low)</option>
+                  <option value="approval_rate_asc">Approval Rate (Low to High)</option>
+                </optgroup>
               </select>
             </div>
           </div>

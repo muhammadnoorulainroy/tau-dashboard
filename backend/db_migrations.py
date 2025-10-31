@@ -583,6 +583,133 @@ def add_domain_github_created_at():
         logger.error(f"❌ Error adding github_created_at column: {e}")
         return False
 
+def fix_sync_state_timezone():
+    """
+    Convert sync_state timestamp columns from TIMESTAMP to TIMESTAMPTZ.
+    This ensures timestamps are stored in UTC and timezone-aware.
+    """
+    try:
+        logger.info("Checking sync_state timezone columns...")
+        
+        with engine.connect() as connection:
+            # Check if table exists
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'sync_state'
+                )
+            """))
+            table_exists = result.scalar()
+            
+            if not table_exists:
+                logger.info("sync_state table doesn't exist yet, skipping")
+                return
+            
+            # Check current column type
+            result = connection.execute(text("""
+                SELECT data_type 
+                FROM information_schema.columns 
+                WHERE table_name = 'sync_state' 
+                AND column_name = 'last_sync_time'
+            """))
+            current_type = result.scalar()
+            
+            if current_type == 'timestamp with time zone':
+                logger.info("✓ sync_state already uses TIMESTAMPTZ")
+                return
+            
+            logger.info(f"Converting sync_state from {current_type} to TIMESTAMPTZ...")
+            
+            # Convert TIMESTAMP to TIMESTAMPTZ
+            # The 'AT TIME ZONE' clause interprets the naive timestamp as local time,
+            # then 'AT TIME ZONE UTC' converts it to UTC
+            connection.execute(text("""
+                ALTER TABLE sync_state 
+                ALTER COLUMN last_sync_time 
+                TYPE TIMESTAMP WITH TIME ZONE 
+                USING last_sync_time AT TIME ZONE current_setting('TIMEZONE') AT TIME ZONE 'UTC'
+            """))
+            connection.commit()
+            logger.info("✓ Converted last_sync_time to TIMESTAMPTZ")
+            
+            if column_exists('sync_state', 'last_full_sync_time'):
+                connection.execute(text("""
+                    ALTER TABLE sync_state 
+                    ALTER COLUMN last_full_sync_time 
+                    TYPE TIMESTAMP WITH TIME ZONE 
+                    USING last_full_sync_time AT TIME ZONE current_setting('TIMEZONE') AT TIME ZONE 'UTC'
+                """))
+                connection.commit()
+                logger.info("✓ Converted last_full_sync_time to TIMESTAMPTZ")
+            
+            logger.info("✓ Timezone migration complete")
+            
+    except Exception as e:
+        logger.error(f"Error fixing sync_state timezone: {e}")
+
+def add_pr_check_passes():
+    """
+    Add check_passes column to pull_requests table.
+    This stores the count of passing checks from the latest commit (like check_failures).
+    """
+    try:
+        logger.info("Checking for check_passes column in pull_requests...")
+        
+        if not column_exists('pull_requests', 'check_passes'):
+            logger.info("Adding check_passes column to pull_requests...")
+            
+            with engine.connect() as connection:
+                connection.execute(text("""
+                    ALTER TABLE pull_requests 
+                    ADD COLUMN check_passes INTEGER DEFAULT 0
+                """))
+                connection.commit()
+                logger.info("✓ Added check_passes column")
+        else:
+            logger.info("✓ check_passes column already exists")
+            
+        logger.info("✓ check_passes column ready")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding check_passes column: {e}")
+        return False
+
+def add_pr_task_execution_columns():
+    """
+    Add task execution results columns to pull_requests table.
+    These store metrics parsed from the github-actions bot comment (Task Execution Results Analysis).
+    """
+    try:
+        logger.info("Checking for task execution columns in pull_requests...")
+        
+        columns_to_add = [
+            ('task_trials_total', 'INTEGER DEFAULT 0'),
+            ('task_trials_passed', 'INTEGER DEFAULT 0'),
+            ('task_trials_failed', 'INTEGER DEFAULT 0'),
+            ('task_success_rate', 'REAL DEFAULT 0.0')
+        ]
+        
+        with engine.connect() as connection:
+            for col_name, col_type in columns_to_add:
+                if not column_exists('pull_requests', col_name):
+                    logger.info(f"Adding {col_name} column to pull_requests...")
+                    connection.execute(text(f"""
+                        ALTER TABLE pull_requests 
+                        ADD COLUMN {col_name} {col_type}
+                    """))
+                    connection.commit()
+                    logger.info(f"✓ Added {col_name} column")
+                else:
+                    logger.info(f"✓ {col_name} column already exists")
+        
+        logger.info("✓ Task execution columns ready")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error adding task execution columns: {e}")
+        return False
+
 def run_migrations():
     """
     Run all database migrations
@@ -611,6 +738,9 @@ def run_migrations():
     # Add new sync_state tracking columns
     add_sync_state_columns()
     
+    # Fix sync_state timezone columns (MUST run before other migrations use it)
+    fix_sync_state_timezone()
+    
     # Add missing users table columns
     add_users_table_columns()
     
@@ -626,8 +756,14 @@ def run_migrations():
     # Add review_comments_count to pull_requests table
     add_pr_review_comments_count()
     
+    # Add check_passes column to pull_requests table
+    add_pr_check_passes()
+    
     # Add github_created_at to domains table
     add_domain_github_created_at()
+    
+    # Add task execution results columns to pull_requests table
+    add_pr_task_execution_columns()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info("✓ DeveloperHierarchy table managed by SQLAlchemy ORM")
