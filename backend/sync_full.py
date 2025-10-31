@@ -51,30 +51,28 @@ def run_full_sync():
         logger.info("Initializing GitHub service...")
         github_service = GitHubService()
         
-        # Run full sync (sync_all_prs fetches PRs from last N days)
         logger.info("")
-        logger.info("🔄 Starting FULL sync (this may take several minutes)...")
-        logger.info("⚠️  This will fetch and re-process PRs from the last %d days", days_back)
-        logger.info("⚠️  All metrics (check counts, task results, etc.) will be updated")
+        logger.info("Starting FULL sync (this may take several minutes)...")
+        logger.info("This will fetch and re-process PRs from the last %d days", days_back)
+        logger.info("All metrics (check counts, task results, etc.) will be updated")
         logger.info("")
         
-        # Run the full sync
         synced_count = github_service.sync_all_prs(db, since_days=days_back)
         
         logger.info("")
         logger.info("="*80)
-        logger.info(f"✅ FULL SYNC COMPLETED!")
+        logger.info(f"FULL SYNC COMPLETED")
         logger.info(f"   Total PRs synced: {synced_count}")
         logger.info("="*80)
         
         return synced_count
         
     except KeyboardInterrupt:
-        logger.warning("\n\n⚠️  Sync interrupted by user (Ctrl+C)")
+        logger.warning("\n\nSync interrupted by user (Ctrl+C)")
         logger.info("Partial sync may have completed. Run again to continue.")
         return 0
     except Exception as e:
-        logger.error(f"❌ Error during full sync: {str(e)}", exc_info=True)
+        logger.error(f"Error during full sync: {str(e)}", exc_info=True)
         return 0
     finally:
         db.close()
@@ -87,11 +85,11 @@ if __name__ == "__main__":
     
     if synced_count > 0:
         logger.info("")
-        logger.info("✅ Sync completed successfully!")
-        logger.info(f"   Check the dashboard to see updated metrics.")
+        logger.info("Sync completed successfully")
+        logger.info("Check the dashboard to see updated metrics.")
         sys.exit(0)
     else:
         logger.warning("")
-        logger.warning("⚠️  Sync completed with no updates or encountered errors.")
+        logger.warning("Sync completed with no updates or encountered errors.")
         sys.exit(1)
 

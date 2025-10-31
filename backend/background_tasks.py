@@ -78,7 +78,7 @@ async def start_domain_refresh():
         
         while True:
             try:
-                logger.info("🔄 Refreshing allowed domains from GitHub...")
+                logger.info("Refreshing allowed domains from GitHub...")
                 
                 from config import update_allowed_domains, settings
                 
@@ -86,10 +86,10 @@ async def start_domain_refresh():
                 success = update_allowed_domains(force=True)
                 
                 if success:
-                    logger.info(f"✅ Domains refreshed: {len(settings.allowed_domains)} domains")
+                    logger.info(f"Domains refreshed: {len(settings.allowed_domains)} domains")
                     logger.debug(f"   Domains: {', '.join(settings.allowed_domains)}")
                 else:
-                    logger.warning(f"⚠️  Domain refresh failed, using cached list: {len(settings.allowed_domains)} domains")
+                    logger.warning(f"Domain refresh failed, using cached list: {len(settings.allowed_domains)} domains")
                 
             except asyncio.CancelledError:
                 # Task was cancelled, exit gracefully

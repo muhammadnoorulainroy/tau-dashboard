@@ -1253,7 +1253,7 @@ class GitHubService:
         
         db.commit()
         
-        logger.info(f"✅ Incremental sync complete: {synced_count} full syncs, {quick_updates} quick updates, {skipped_count} skipped, {checked_count} checked total")
+        logger.info(f"Incremental sync complete: {synced_count} full syncs, {quick_updates} quick updates, {skipped_count} skipped, {checked_count} checked total")
         
         # Update metrics if we synced any PRs
         if synced_count > 0 or quick_updates > 0:

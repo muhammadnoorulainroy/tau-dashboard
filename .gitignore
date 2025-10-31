@@ -101,3 +101,14 @@ temp/
 ssl/
 
 
+backfill_week_pod.py
+backup_database.bat
+backfill_week_pod.py
+backup_database.py
+cleanup_duplicate_weeks.py
+populate_weeks_from_github.py
+README_MIGRATIONS.md
+start_backend.sh
+sync_full.bat
+setup.sh
+backend/sql_scripts/README.md
