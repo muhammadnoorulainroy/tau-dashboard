@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, Float
 from pydantic import BaseModel
@@ -20,6 +21,10 @@ from schemas import (
     DeveloperMetrics, ReviewerMetrics, DomainMetricsResponse, 
     PullRequestResponse, DashboardOverview, PRStateDistribution,
     PaginatedDevelopers, PaginatedReviewers, AggregationMetrics
+)
+from auth import (
+    verify_google_token, create_access_token, verify_access_token,
+    revoke_token, get_current_user, get_active_sessions_count
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -211,6 +216,188 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Authentication middleware - protect all API routes except auth endpoints
+@app.middleware("http")
+async def authentication_middleware(request: Request, call_next):
+    """Middleware to enforce authentication on all /api/* routes except auth endpoints"""
+    
+    # Public endpoints that don't require authentication
+    public_paths = [
+        "/",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/api/auth/login",
+        "/api/auth/verify",
+        "/health"
+    ]
+    
+    # Check if path is public
+    if request.url.path in public_paths or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    
+    # WebSocket connections don't use Bearer tokens in headers, skip for now
+    if request.url.path == "/ws":
+        return await call_next(request)
+    
+    # Check for Authorization header
+    auth_header = request.headers.get("Authorization")
+    
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Missing or invalid authorization header"}
+        )
+    
+    # Extract and verify token
+    token = auth_header.split(" ")[1]
+    user_info = verify_access_token(token)
+    
+    if user_info is None:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or expired authentication token"}
+        )
+    
+    # Add user info to request state for use in endpoints
+    request.state.user = user_info
+    
+    return await call_next(request)
+
+
+# ============================================================================
+# Authentication Endpoints
+# ============================================================================
+
+class GoogleLoginRequest(BaseModel):
+    """Request model for Google OAuth login"""
+    credential: str  # Google ID token
+
+
+class LoginResponse(BaseModel):
+    """Response model for successful login"""
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+async def login_with_google(request: GoogleLoginRequest):
+    """
+    Authenticate user with Google OAuth token
+    
+    This endpoint receives the Google ID token from the frontend,
+    verifies it with Google, checks if the email is authorized,
+    and returns a JWT access token.
+    
+    Only users with Turing emails in the database or specific allowed emails can access.
+    """
+    try:
+        # Verify Google token and check authorization
+        user_info = verify_google_token(request.credential)
+        
+        if user_info is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. Your email is not authorized to access this dashboard. Please contact an administrator."
+            )
+        
+        # Check if email is verified
+        if not user_info.get('email_verified', False):
+            raise HTTPException(
+                status_code=401,
+                detail="Email not verified with Google"
+            )
+        
+        # Create JWT access token
+        access_token = create_access_token(user_info)
+        
+        logger.info(f"User logged in successfully: {user_info['email']}")
+        
+        return LoginResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user={
+                'email': user_info['email'],
+                'name': user_info['name'],
+                'picture': user_info['picture']
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Authentication failed"
+        )
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    """
+    Logout current user by revoking their token
+    """
+    try:
+        auth_header = request.headers.get("Authorization")
+        
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(
+                status_code=401,
+                detail="Missing authorization header"
+            )
+        
+        token = auth_header.split(" ")[1]
+        
+        # Revoke the token
+        revoked = revoke_token(token)
+        
+        if revoked:
+            logger.info("User logged out successfully")
+            return {"message": "Logged out successfully"}
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Token not found or already expired"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Logout error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Logout failed"
+        )
+
+
+@app.get("/api/auth/me")
+async def get_current_user_info(current_user: dict = Depends(get_current_user)):
+    """
+    Get current authenticated user information
+    """
+    return {
+        "user": current_user,
+        "authenticated": True
+    }
+
+
+@app.get("/api/auth/sessions")
+async def get_sessions_info(current_user: dict = Depends(get_current_user)):
+    """
+    Get active sessions count (admin endpoint)
+    """
+    return {
+        "active_sessions": get_active_sessions_count()
+    }
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint (no auth required)"""
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/")
 def read_root():

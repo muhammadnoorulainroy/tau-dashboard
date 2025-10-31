@@ -85,7 +85,7 @@ start-backend:
 start-frontend:
 	@echo "🚀 Starting frontend dev server..."
 	@echo "Creating frontend .env symlink if needed..."
-	@cd frontend && [ -f .env ] || ln -s .env.dev .env
+	@cd frontend && ([ -L .env ] || [ ! -e .env ]) && ln -sf .env.dev .env || true
 	@echo "Starting frontend (check frontend/.env.dev for port configuration)..."
 	cd frontend && npm run dev
 

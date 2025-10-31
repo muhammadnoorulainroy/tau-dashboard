@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     
     # Security
     secret_key: str = "your-secret-key-here"
+    
+    # Google OAuth Configuration
+    app_google_client_id: Optional[str] = None
+    app_google_client_secret: Optional[str] = None
 
     # Google Service Account Configuration (Optional - for hierarchy/aggregation features)
     google_service_account_type: Optional[str] = "service_account"
@@ -103,7 +107,7 @@ class Settings(BaseSettings):
         return "postgresql://postgres:postgres@localhost:5432/tau_dashboard"
     
     class Config:
-        env_file = ".env"
+        env_file = ".env.dev"
         env_file_encoding = 'utf-8'
         # Allow extra fields for flexibility
         extra = 'allow'

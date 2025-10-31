@@ -8,6 +8,38 @@ const api = axios.create({
   },
 });
 
+// Request interceptor to add authentication token
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('auth_token');
+    
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Response interceptor to handle authentication errors
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // If 401 Unauthorized, clear auth and redirect to login
+    if (error.response && error.response.status === 401) {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('user');
+      // Page will automatically redirect to login due to App.jsx auth check
+      window.location.reload();
+    }
+    
+    return Promise.reject(error);
+  }
+);
+
 // Dashboard Overview
 export const getDashboardOverview = () => api.get('/overview');
 
@@ -50,6 +82,13 @@ export const refreshDomains = () =>
 
 export const getCurrentDomains = () => 
   api.get('/domains/config/current');
+
+// Authentication
+export const logout = () => 
+  api.post('/auth/logout');
+
+export const getCurrentUser = () => 
+  api.get('/auth/me');
 
 // WebSocket connection for real-time updates
 export const connectWebSocket = (onMessage) => {
