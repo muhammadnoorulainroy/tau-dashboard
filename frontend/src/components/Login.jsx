@@ -37,6 +37,9 @@ const Login = ({ onLoginSuccess }) => {
       // Store auth token and user info
       localStorage.setItem('auth_token', data.access_token);
       localStorage.setItem('user', JSON.stringify(data.user));
+      
+      console.log('✅ Login successful! Token stored:', data.access_token.substring(0, 20) + '...');
+      console.log('👤 User:', data.user);
 
       // Show success message
       toast.success(`Welcome, ${data.user.name}!`, {
