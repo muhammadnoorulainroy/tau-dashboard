@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { GoogleLogin } from '@react-oauth/google';
 import toast from 'react-hot-toast';
+import { API_BASE_URL } from '../services/api.config';
 
 /**
  * Login Component - Google OAuth Authentication
@@ -14,7 +15,7 @@ const Login = ({ onLoginSuccess }) => {
     setIsLoading(true);
     
     try {
-      const response = await fetch('http://localhost:4000/api/auth/login', {
+      const response = await fetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

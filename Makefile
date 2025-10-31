@@ -6,7 +6,7 @@ BACKEND_PORT ?= 4000
 # BACKEND_URL must be explicitly set via environment variable (no default)
 BACKEND_URL ?=
 
-.PHONY: help setup install start-backend start-frontend start stop clean test sync sync-full db-init db-setup db-migrate db-test db-reset db-status generate-secret
+.PHONY: help setup install start-backend start-frontend start stop clean test sync sync-full db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone db-backfill-weeks db-cleanup-weeks generate-secret
 
 # Default target
 help:
@@ -30,9 +30,10 @@ help:
 	@echo "Database Management:"
 	@echo "  make db-setup            - Setup database (create DB + tables, one command)"
 	@echo "  make db-migrate          - Run database migration (create tables)"
-	@echo "  make db-backup           - Create full database backup for production deployment"
 	@echo "  make db-test             - Test migration on test database"
 	@echo "  make db-status           - Show database status"
+	@echo "  make db-backfill-weeks   - Backfill week/pod data for existing PRs"
+	@echo "  make db-cleanup-weeks    - Clean up duplicate week entries"
 	@echo "  make db-reset            - Reset database (DANGER: deletes all data)"
 	@echo "  make db-init             - Initialize database (legacy, use db-migrate)"
 	@echo ""
@@ -165,6 +166,24 @@ db-reset:
 	psql -U postgres -d tau_dashboard -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" || echo "Make sure PostgreSQL is running"
 	@echo "Recreating tables..."
 	make db-migrate
+
+# Backfill week/pod data for existing PRs
+db-backfill-weeks:
+	@echo "🔄 Backfilling week and pod data for existing PRs..."
+	@echo "This will update PRs that have NULL week_id by parsing their file paths."
+	@echo ""
+	@echo "Options:"
+	@echo "  To preview changes: cd backend && source venv/bin/activate && python backfill_week_pod.py --dry-run"
+	@echo "  To limit PRs:       cd backend && source venv/bin/activate && python backfill_week_pod.py --limit 10"
+	@echo ""
+	cd backend && source venv/bin/activate && python backfill_week_pod.py
+
+# Clean up duplicate week entries
+db-cleanup-weeks:
+	@echo "🧹 Cleaning up duplicate week entries..."
+	@echo "This will merge duplicate weeks (e.g., 'Week 13' and 'week_13') into one."
+	@echo ""
+	cd backend && source venv/bin/activate && python cleanup_duplicate_weeks.py
 
 # Generate secure secret key
 generate-secret:

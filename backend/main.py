@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
             total_records = db.query(DeveloperHierarchy).count()
             
             logger.info("=" * 60)
-            logger.info(f"Google Sheets sync complete:")
+            logger.info(f"✅ Google Sheets sync complete:")
             logger.info(f"   - Inserted: {inserted}")
             logger.info(f"   - Updated: {updated}")
             logger.info(f"   - Errors: {errors}")
@@ -121,10 +121,10 @@ async def lifespan(app: FastAPI):
         success = update_allowed_domains(force=True)
         
         if success:
-            logger.info(f"Domains updated: {len(settings.allowed_domains)} domains discovered")
+            logger.info(f"✅ Domains updated: {len(settings.allowed_domains)} domains discovered")
             logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
         else:
-            logger.warning(f"Using fallback domain list: {len(settings.allowed_domains)} domains")
+            logger.warning(f"⚠️  Using fallback domain list: {len(settings.allowed_domains)} domains")
         
         logger.info("=" * 60)
     except Exception as e:
@@ -1358,12 +1358,12 @@ async def trigger_sync(
                         'description': result['description']
                     }
                 })
-                logger.info(f"Sync complete, notified clients: {result['count']} PRs")
+                logger.info(f"✅ Sync complete, notified clients: {result['count']} PRs")
             except asyncio.CancelledError:
                 logger.info("Sync task cancelled during shutdown")
                 raise
             except Exception as e:
-                logger.error(f"Error in background sync: {str(e)}")
+                logger.error(f"❌ Error in background sync: {str(e)}")
                 await manager.broadcast({
                     'type': 'sync_error',
                     'data': {'error': str(e)}
@@ -1377,7 +1377,8 @@ async def trigger_sync(
         task = asyncio.create_task(run_sync_and_notify())
         active_sync_tasks.add(task)
         
-        logger.info(f"Sync started in background: {sync_desc}")
+        # Return immediately
+        logger.info(f"🚀 Sync started in background: {sync_desc}")
         return {
             "status": "started", 
             "message": "Sync running in background",
@@ -1576,7 +1577,7 @@ def sync_google_sheets(db: Session = Depends(get_db)):
             "updated": updated,
             "errors": errors,
             "total_records": total_records,
-            "message": f"Hierarchy refreshed: {total_records} developers synced from Google Sheets ({inserted} new, {errors} skipped)."
+            "message": f"✅ Hierarchy refreshed: {total_records} developers synced from Google Sheets ({inserted} new, {errors} skipped)."
         }
     except FileNotFoundError as e:
         logger.error(f"Service account file not found: {str(e)}")
