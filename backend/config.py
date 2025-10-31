@@ -69,6 +69,7 @@ class Settings(BaseSettings):
         "hr_talent_management",
         "incident_management",
         "incident_management_redos",
+        "incident_management_technical",
         "it_incident_management",
         "smart_home",
         "smart_home_alexa",

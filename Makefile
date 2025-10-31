@@ -1,11 +1,22 @@
 SHELL := /bin/bash
 
-.PHONY: help setup install start-backend start-frontend start stop clean test sync db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone db-backfill-weeks db-cleanup-weeks generate-secret
+# Environment variables (can be overridden)
+BACKEND_HOST ?= 0.0.0.0
+BACKEND_PORT ?= 4000
+# BACKEND_URL must be explicitly set via environment variable (no default)
+BACKEND_URL ?=
+
+.PHONY: help setup install start-backend start-frontend start stop clean test sync sync-full db-init db-setup db-migrate db-test db-reset db-status db-fix-timezone db-backfill-weeks db-cleanup-weeks generate-secret
 
 # Default target
 help:
 	@echo "TAU Dashboard - Local Development Commands"
 	@echo "=========================================="
+	@echo ""
+	@echo "Environment Variables:"
+	@echo "  BACKEND_HOST=0.0.0.0    - Backend host (default: 0.0.0.0)"
+	@echo "  BACKEND_PORT=4000       - Backend port (default: 4000)"
+	@echo "  BACKEND_URL=http://...  - Full backend URL (REQUIRED for sync command, no default)"
 	@echo ""
 	@echo "Setup & Installation:"
 	@echo "  make setup          - Initial setup (install dependencies)"
@@ -26,9 +37,12 @@ help:
 	@echo "  make db-reset            - Reset database (DANGER: deletes all data)"
 	@echo "  make db-init             - Initialize database (legacy, use db-migrate)"
 	@echo ""
+	@echo "Sync Commands:"
+	@echo "  make sync           - Trigger incremental GitHub sync via API (fast, requires BACKEND_URL)"
+	@echo "  make sync-full      - Run FULL re-sync in foreground with visible logs (direct DB access)"
+	@echo ""
 	@echo "Other Commands:"
 	@echo "  make test           - Run tests"
-	@echo "  make sync           - Trigger manual GitHub sync"
 	@echo "  make generate-secret - Generate a secure SECRET_KEY"
 	@echo "  make clean          - Clean up generated files"
 
@@ -65,8 +79,8 @@ start-backend:
 	@echo "🚀 Starting backend server..."
 	@echo "Creating backend .env symlink if needed..."
 	@cd backend && [ -f .env ] || ln -s .env.dev .env
-	@echo "Starting backend on port 4000..."
-	cd backend && source venv/bin/activate && uvicorn main:app --reload --host 0.0.0.0 --port 4000
+	@echo "Starting backend on $(BACKEND_HOST):$(BACKEND_PORT)..."
+	cd backend && source venv/bin/activate && uvicorn main:app --reload --host $(BACKEND_HOST) --port $(BACKEND_PORT)
 
 # Start frontend dev server
 start-frontend:
@@ -87,10 +101,34 @@ test:
 	@echo "🧪 Running tests..."
 	@cd backend && source venv/bin/activate && python -m pytest || echo "pytest not configured yet"
 
-# Trigger manual sync
+# Trigger manual sync (incremental)
 sync:
-	@echo "🔄 Triggering GitHub sync..."
-	curl -X POST http://localhost:8000/api/sync
+ifndef BACKEND_URL
+	@echo "❌ ERROR: BACKEND_URL is not set!"
+	@echo ""
+	@echo "Please set BACKEND_URL environment variable:"
+	@echo "  Windows:    set BACKEND_URL=http://localhost:4000"
+	@echo "  Linux/Mac:  export BACKEND_URL=http://localhost:4000"
+	@echo "  Production: set BACKEND_URL=https://your-api-domain.com"
+	@echo ""
+	@echo "Or run: BACKEND_URL=http://localhost:4000 make sync"
+	@exit 1
+else
+	@echo "🔄 Triggering incremental GitHub sync..."
+	@echo "Backend URL: $(BACKEND_URL)"
+	@curl -X POST $(BACKEND_URL)/api/sync
+endif
+
+# Trigger full re-sync from oldest PR in database (runs in foreground with logs)
+sync-full:
+	@echo "🔄 Starting FULL re-sync..."
+	@echo ""
+	@echo "⚠️  This will re-sync ALL PRs to update check counts and other metrics."
+	@echo "⚠️  This may take several minutes and use significant API quota."
+	@echo "⚠️  Press Ctrl+C to cancel."
+	@echo ""
+	@sleep 3
+	cd backend && source venv/bin/activate && python sync_full.py
 
 # Setup database (create database + tables in one command)
 db-setup:

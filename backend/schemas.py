@@ -74,9 +74,15 @@ class PullRequestResponse(BaseModel):
     comment_count: int
     rework_count: int
     check_failures: int
+    check_passes: int = 0
+    failed_check_names: List[str] = []
+    task_trials_total: int = 0
+    task_trials_passed: int = 0
+    task_trials_failed: int = 0
+    task_success_rate: float = 0.0
+    turing_email: Optional[str] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class DashboardOverview(BaseModel):
     total_prs: int
@@ -91,13 +97,16 @@ class DashboardOverview(BaseModel):
     
     @field_serializer('last_sync_time')
     def serialize_datetime(self, dt: Optional[datetime]) -> Optional[str]:
-        """Serialize datetime to ISO 8601 format with timezone (UTC)."""
+        """Serialize datetime to ISO 8601 format in UTC."""
         if dt is None:
             return None
-        # Ensure timezone-aware
-        if dt.tzinfo is None:
+        # Convert to UTC if it has timezone info
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        else:
+            # If naive, assume UTC
             dt = dt.replace(tzinfo=timezone.utc)
-        # Return ISO format with timezone (e.g., "2025-10-25T18:47:38.804295+00:00")
+        # Return ISO format in UTC (e.g., "2025-10-25T18:47:38.804295+00:00")
         return dt.isoformat()
 
 class PRStateDistribution(BaseModel):

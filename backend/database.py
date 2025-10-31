@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean, Text, JSON, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean, Text, JSON, ForeignKey, Index, UniqueConstraint, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.sql import func
@@ -46,6 +46,13 @@ class PullRequest(Base):
     # Rework tracking
     rework_count = Column(Integer, default=0)
     check_failures = Column(Integer, default=0)
+    check_passes = Column(Integer, default=0)
+    
+    # Task Execution Results (from bot comment)
+    task_trials_total = Column(Integer, default=0)
+    task_trials_passed = Column(Integer, default=0)
+    task_trials_failed = Column(Integer, default=0)
+    task_success_rate = Column(Float, default=0.0)
     
     # Interface/Week tracking (added via migration)
     trainer_id = Column(Integer, nullable=True)
@@ -368,8 +375,8 @@ class SyncState(Base):
     __tablename__ = "sync_state"
     
     id = Column(Integer, primary_key=True, index=True)
-    last_sync_time = Column(DateTime, nullable=True)
-    last_full_sync_time = Column(DateTime, nullable=True)
+    last_sync_time = Column(DateTime(timezone=True), nullable=True)
+    last_full_sync_time = Column(DateTime(timezone=True), nullable=True)
 
 
 class DeveloperHierarchy(Base):
