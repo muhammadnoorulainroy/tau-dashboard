@@ -1,4 +1,5 @@
 import React from 'react';
+import { NavLink } from 'react-router-dom';
 import {
   HomeIcon,
   UserGroupIcon,
@@ -10,16 +11,16 @@ import {
 } from '@heroicons/react/24/outline';
 
 const navigation = [
-  { name: 'Dashboard', value: 'dashboard', icon: HomeIcon },
-  { name: 'Interfaces', value: 'interfaces', icon: CubeIcon },
-  { name: 'Developers', value: 'developers', icon: UserGroupIcon },
-  { name: 'Reviewers', value: 'reviewers', icon: ClipboardDocumentCheckIcon },
-  { name: 'Domains', value: 'domains', icon: FolderIcon },
-  { name: 'Pull Requests', value: 'pull-requests', icon: DocumentTextIcon },
-  { name: 'Aggregation', value: 'aggregation', icon: ChartBarIcon },
+  { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
+  { name: 'Interfaces', path: '/interfaces', icon: CubeIcon },
+  { name: 'Developers', path: '/developers', icon: UserGroupIcon },
+  { name: 'Reviewers', path: '/reviewers', icon: ClipboardDocumentCheckIcon },
+  { name: 'Domains', path: '/domains', icon: FolderIcon },
+  { name: 'Pull Requests', path: '/pull-requests', icon: DocumentTextIcon },
+  { name: 'Aggregation', path: '/aggregation', icon: ChartBarIcon },
 ];
 
-const Sidebar = ({ activeView, setActiveView, isOpen }) => {
+const Sidebar = ({ isOpen }) => {
   return (
     <div className={`
       fixed inset-y-0 left-0 z-10 w-64 bg-white shadow-lg transform transition-transform duration-300 pt-16
@@ -29,13 +30,12 @@ const Sidebar = ({ activeView, setActiveView, isOpen }) => {
         <nav className="flex-1 px-2 py-4 space-y-1">
           {navigation.map((item) => {
             const Icon = item.icon;
-            const isActive = activeView === item.value;
             
             return (
-              <button
-                key={item.value}
-                onClick={() => setActiveView(item.value)}
-                className={`
+              <NavLink
+                key={item.path}
+                to={item.path}
+                className={({ isActive }) => `
                   w-full flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors
                   ${isActive
                     ? 'bg-primary-100 text-primary-900'
@@ -43,9 +43,13 @@ const Sidebar = ({ activeView, setActiveView, isOpen }) => {
                   }
                 `}
               >
-                <Icon className={`mr-3 h-5 w-5 ${isActive ? 'text-primary-600' : 'text-gray-400'}`} />
-                {item.name}
-              </button>
+                {({ isActive }) => (
+                  <>
+                    <Icon className={`mr-3 h-5 w-5 ${isActive ? 'text-primary-600' : 'text-gray-400'}`} />
+                    {item.name}
+                  </>
+                )}
+              </NavLink>
             );
           })}
         </nav>

@@ -58,10 +58,10 @@ const DeveloperView = ({ lastUpdate }) => {
 
   const fetchDomains = async () => {
     try {
-      const response = await api.get(`/domains/list`);
+      const response = await api.get('/domains/list');
       setDomains(response.data.domains || []);
     } catch (error) {
-      console.error('Error fetching domains:', error);
+      // Error fetching domains
     }
   };
 
@@ -82,13 +82,11 @@ const DeveloperView = ({ lastUpdate }) => {
       if (debouncedSearchTerm) params.search = debouncedSearchTerm;
       if (selectedDomain) params.domain = selectedDomain;
       
-      console.log('Fetching developers with params:', params);
-      const response = await api.get(`/developers`, { params });
+      const response = await api.get('/developers', { params });
       // Always replace data, never append
       setDevelopers(response.data.data || []);
       setTotal(response.data.total || 0);
     } catch (error) {
-      console.error('Error fetching developers:', error);
       setDevelopers([]);
       setTotal(0);
     } finally {
@@ -183,7 +181,6 @@ const DeveloperView = ({ lastUpdate }) => {
                   const lastUnderscoreIndex = value.lastIndexOf('_');
                   const newSortBy = value.substring(0, lastUnderscoreIndex);
                   const newSortOrder = value.substring(lastUnderscoreIndex + 1);
-                  console.log(`Dropdown changed: "${value}" → sortBy="${newSortBy}", sortOrder="${newSortOrder}"`);
                   setSortBy(newSortBy);
                   setSortOrder(newSortOrder);
                 }}

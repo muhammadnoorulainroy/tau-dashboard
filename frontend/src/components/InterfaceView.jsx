@@ -45,9 +45,9 @@ const InterfaceView = ({ lastUpdate }) => {
     try {
       // Fetch weeks, domains, and trainers
       const [weeksRes, domainsRes, trainersRes] = await Promise.all([
-        api.get(`/weeks`),
-        api.get(`/domains/list`),
-        api.get(`/trainers`)
+        api.get('/weeks'),
+        api.get('/domains/list'),
+        api.get('/trainers')
       ]);
       
       const weeksList = weeksRes.data.weeks || [];
@@ -75,7 +75,7 @@ const InterfaceView = ({ lastUpdate }) => {
         });
       }
     } catch (error) {
-      console.error('Error initializing filters:', error);
+      // Error initializing filters
     }
   };
 
@@ -90,15 +90,15 @@ const InterfaceView = ({ lastUpdate }) => {
       
       // Fetch both interface data and status breakdown
       const [interfacesRes, statusRes] = await Promise.all([
-        api.get(`/interfaces/filtered`, { params }),
-        api.get(`/pr-status-breakdown`, { params: { week_id: activeFilters.week_id, domain_id: activeFilters.domain_id } })
+        api.get('/interfaces/filtered', { params }),
+        api.get('/pr-status-breakdown', { params: { week_id: activeFilters.week_id, domain_id: activeFilters.domain_id } })
       ]);
       
       setInterfaces(interfacesRes.data.interfaces);
       setSummary(interfacesRes.data.summary);
       setStatusBreakdown(statusRes.data);
     } catch (error) {
-      console.error('Error fetching filtered interface data:', error);
+      // Error fetching filtered interface data
     } finally {
       setLoading(false);
     }

@@ -222,6 +222,10 @@ app.add_middleware(
 async def authentication_middleware(request: Request, call_next):
     """Middleware to enforce authentication on all /api/* routes except auth endpoints"""
     
+    # Allow OPTIONS requests (CORS preflight)
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    
     # Public endpoints that don't require authentication
     public_paths = [
         "/",
@@ -230,6 +234,7 @@ async def authentication_middleware(request: Request, call_next):
         "/openapi.json",
         "/api/auth/login",
         "/api/auth/verify",
+        "/api/auth/logout",
         "/health"
     ]
     
@@ -2325,6 +2330,8 @@ def get_pr_status_breakdown(
             'expert approved': 'Expert Approved',
             'expert review pending': 'Expert Review Pending',
             'good task': 'Good Task',
+            'needs changes': 'Needs Changes',
+            'changes requested': 'Needs Changes',
             'pending review': 'Pending Review',
             'pod lead approved': 'Pod Lead Approved',
             'ready to merge': 'Ready To Merge',

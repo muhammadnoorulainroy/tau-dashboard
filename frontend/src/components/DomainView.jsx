@@ -37,7 +37,7 @@ const DomainView = ({ lastUpdate }) => {
         setSelectedDomain(response.data[0].domain);
       }
     } catch (error) {
-      console.error('Error fetching domains:', error);
+      // Error fetching domains
     } finally {
       setLoading(false);
     }
@@ -55,7 +55,7 @@ const DomainView = ({ lastUpdate }) => {
         }));
       setDomainStats(data);
     } catch (error) {
-      console.error('Error fetching domain stats:', error);
+      // Error fetching domain stats
     }
   };
 

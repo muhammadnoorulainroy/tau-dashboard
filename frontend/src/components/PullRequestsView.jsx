@@ -40,7 +40,7 @@ const PullRequestsView = ({ lastUpdate }) => {
       const response = await getDomainMetrics();
       setDomains(response.data.map(d => d.domain));
     } catch (error) {
-      console.error('Error fetching domains:', error);
+      // Error fetching domains
     }
   };
 
@@ -59,7 +59,7 @@ const PullRequestsView = ({ lastUpdate }) => {
       setPRs(response.data);
       // Note: Total count would need to be returned from API for proper pagination
     } catch (error) {
-      console.error('Error fetching PRs:', error);
+      // Error fetching PRs
     } finally {
       setLoading(false);
     }

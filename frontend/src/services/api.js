@@ -15,9 +15,6 @@ api.interceptors.request.use(
     
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
-      console.log('🔐 Adding auth token to request:', config.url);
-    } else {
-      console.warn('⚠️  No auth token found for request:', config.url);
     }
     
     return config;
@@ -98,7 +95,7 @@ export const connectWebSocket = (onMessage) => {
   const ws = new WebSocket(WS_URL);
   
   ws.onopen = () => {
-    console.log('WebSocket connected');
+    // WebSocket connected
   };
   
   ws.onmessage = (event) => {
@@ -107,11 +104,10 @@ export const connectWebSocket = (onMessage) => {
   };
   
   ws.onerror = (error) => {
-    console.error('WebSocket error:', error);
+    // WebSocket error occurred
   };
   
   ws.onclose = () => {
-    console.log('WebSocket disconnected');
     // Attempt reconnection after 5 seconds
     setTimeout(() => connectWebSocket(onMessage), 5000);
   };
