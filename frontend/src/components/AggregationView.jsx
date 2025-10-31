@@ -11,8 +11,7 @@ import {
   CheckCircleIcon,
   ExclamationCircleIcon
 } from '@heroicons/react/24/outline';
-import axios from 'axios';
-import { API_BASE_URL } from '../services/api.config';
+import api from '../services/api';
 
 const AggregationView = () => {
   const [activeTab, setActiveTab] = useState('domains');
@@ -50,7 +49,7 @@ const AggregationView = () => {
 
   const fetchDomains = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/domains/list`);
+      const response = await api.get('/domains/list');
       // Handle new format: {domains: [{id, name}]} or old format: ["domain1", ...]
       const domainsList = response.data.domains || response.data;
       // Extract just the names for the filter dropdown
@@ -65,7 +64,7 @@ const AggregationView = () => {
 
   const fetchStatuses = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/statuses/list`);
+      const response = await api.get('/statuses/list');
       setStatuses(response.data);
     } catch (err) {
       console.error('Failed to fetch statuses:', err);
@@ -77,18 +76,15 @@ const AggregationView = () => {
     setError(null);
     try {
       const endpoint = tabs.find(t => t.id === activeTab)?.endpoint;
-      let url = `${API_BASE_URL}${endpoint}`;
       
       // Add filters for trainers, pod-leads, and calibrators tabs
+      let params = {};
       if (['trainers', 'pod-leads', 'calibrators'].includes(activeTab)) {
-        const params = new URLSearchParams();
-        if (selectedDomain) params.append('domain', selectedDomain);
-        if (selectedStatus) params.append('status', selectedStatus);
-        const queryString = params.toString();
-        if (queryString) url += `?${queryString}`;
+        if (selectedDomain) params.domain = selectedDomain;
+        if (selectedStatus) params.status = selectedStatus;
       }
       
-      const response = await axios.get(url);
+      const response = await api.get(endpoint, { params });
       setData(response.data);
     } catch (err) {
       setError('Failed to load data. Please try again.');
@@ -118,7 +114,7 @@ const AggregationView = () => {
   const syncGoogleSheets = async () => {
     setSyncing(true);
     try {
-      const response = await axios.post(`${API_BASE_URL}/google-sheets/sync`);
+      const response = await api.post('/google-sheets/sync');
       setNotification({
         type: 'success',
         message: response.data.message
