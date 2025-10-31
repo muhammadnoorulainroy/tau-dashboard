@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { API_BASE_URL } from '../services/api.config';
+import api from '../services/api';
 import { 
   ClipboardDocumentCheckIcon,
   CheckIcon,
@@ -58,7 +57,7 @@ const ReviewerView = ({ lastUpdate }) => {
 
   const fetchDomains = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/domains/list`);
+      const response = await api.get(`/domains/list`);
       setDomains(response.data.domains || []);
     } catch (error) {
       console.error('Error fetching domains:', error);
@@ -82,7 +81,7 @@ const ReviewerView = ({ lastUpdate }) => {
       if (debouncedSearchTerm) params.search = debouncedSearchTerm;
       if (selectedDomain) params.domain = selectedDomain;
       
-      const response = await axios.get(`${API_BASE_URL}/reviewers`, { params });
+      const response = await api.get(`/reviewers`, { params });
       // Always replace data, never append
       setReviewers(response.data.data || []);
       setTotal(response.data.total || 0);

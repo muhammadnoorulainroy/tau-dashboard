@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { API_BASE_URL } from '../services/api.config';
+import api from '../services/api';
 import SearchableDropdown from './SearchableDropdown';
 import {
   CubeIcon,
@@ -46,9 +45,9 @@ const InterfaceView = ({ lastUpdate }) => {
     try {
       // Fetch weeks, domains, and trainers
       const [weeksRes, domainsRes, trainersRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/weeks`),
-        axios.get(`${API_BASE_URL}/domains/list`),
-        axios.get(`${API_BASE_URL}/trainers`)
+        api.get(`/weeks`),
+        api.get(`/domains/list`),
+        api.get(`/trainers`)
       ]);
       
       const weeksList = weeksRes.data.weeks || [];
@@ -91,8 +90,8 @@ const InterfaceView = ({ lastUpdate }) => {
       
       // Fetch both interface data and status breakdown
       const [interfacesRes, statusRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/interfaces/filtered`, { params }),
-        axios.get(`${API_BASE_URL}/pr-status-breakdown`, { params: { week_id: activeFilters.week_id, domain_id: activeFilters.domain_id } })
+        api.get(`/interfaces/filtered`, { params }),
+        api.get(`/pr-status-breakdown`, { params: { week_id: activeFilters.week_id, domain_id: activeFilters.domain_id } })
       ]);
       
       setInterfaces(interfacesRes.data.interfaces);
