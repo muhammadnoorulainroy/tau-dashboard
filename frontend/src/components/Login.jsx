@@ -38,9 +38,6 @@ const Login = ({ onLoginSuccess }) => {
       localStorage.setItem('auth_token', data.access_token);
       localStorage.setItem('user', JSON.stringify(data.user));
       
-      console.log('✅ Login successful! Token stored:', data.access_token.substring(0, 20) + '...');
-      console.log('👤 User:', data.user);
-
       // Show success message
       toast.success(`Welcome, ${data.user.name}!`, {
         duration: 3000,
@@ -50,7 +47,6 @@ const Login = ({ onLoginSuccess }) => {
       onLoginSuccess(data);
 
     } catch (error) {
-      console.error('Login error:', error);
       toast.error(error.message || 'Failed to sign in. Please try again.', {
         duration: 4000,
       });

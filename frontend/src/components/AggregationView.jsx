@@ -58,7 +58,7 @@ const AggregationView = () => {
         : [];
       setDomains(domainNames);
     } catch (err) {
-      console.error('Failed to fetch domains:', err);
+      // Failed to fetch domains
     }
   };
 
@@ -67,7 +67,7 @@ const AggregationView = () => {
       const response = await api.get('/statuses/list');
       setStatuses(response.data);
     } catch (err) {
-      console.error('Failed to fetch statuses:', err);
+      // Failed to fetch statuses
     }
   };
 
@@ -121,12 +121,11 @@ const AggregationView = () => {
       });
       await fetchData();
     } catch (err) {
-      const errorMsg = err.response?.data?.detail || 'Failed to sync Google Sheets. Check console.';
+      const errorMsg = err.response?.data?.detail || 'Failed to sync Google Sheets.';
       setNotification({
         type: 'error',
         message: errorMsg
       });
-      console.error('Sync error:', err);
     } finally {
       setSyncing(false);
     }

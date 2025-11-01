@@ -103,6 +103,11 @@ def verify_google_token(token: str) -> Optional[dict]:
     Returns:
         User info dict if valid and authorized, None otherwise
     """
+    # Skip Google OAuth if client ID is not configured
+    if not settings.app_google_client_id:
+        logger.warning("Google OAuth is not configured (APP_GOOGLE_CLIENT_ID missing)")
+        return None
+    
     try:
         # Verify the token with Google
         idinfo = id_token.verify_oauth2_token(

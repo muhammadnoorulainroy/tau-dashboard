@@ -222,6 +222,10 @@ app.add_middleware(
 async def authentication_middleware(request: Request, call_next):
     """Middleware to enforce authentication on all /api/* routes except auth endpoints"""
     
+    # Allow OPTIONS requests (CORS preflight)
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    
     # Public endpoints that don't require authentication
     public_paths = [
         "/",
@@ -230,6 +234,7 @@ async def authentication_middleware(request: Request, call_next):
         "/openapi.json",
         "/api/auth/login",
         "/api/auth/verify",
+        "/api/auth/logout",
         "/health"
     ]
     
@@ -2306,7 +2311,8 @@ def get_pr_status_breakdown(
     domain_id: int = None,
     db: Session = Depends(get_db)
 ):
-    """Get PR status breakdown by week and domain with complexity distribution."""
+    """Get PR status breakdown by week and domain with complexity distribution.
+    Displays ALL labels/statuses as-is without normalization."""
     try:
         # Build query
         query = db.query(PullRequest)
@@ -2319,66 +2325,52 @@ def get_pr_status_breakdown(
         # Get all PRs
         prs = query.all()
         
-        # Status mapping based on labels
-        status_map = {
-            'discarded': 'Discarded',
-            'expert approved': 'Expert Approved',
-            'expert review pending': 'Expert Review Pending',
-            'good task': 'Good Task',
-            'pending review': 'Pending Review',
-            'pod lead approved': 'Pod Lead Approved',
-            'ready to merge': 'Ready To Merge',
-            'resubmitted': 'Resubmitted',
-            'rework': 'Rework',
-            'merged': 'Merged'
-        }
-        
-        # Initialize status breakdown
+        # Dynamically collect all statuses from PRs
         status_breakdown = {}
-        for status in status_map.values():
-            status_breakdown[status] = {
-                'count': 0,
-                'complexity': {
-                    'expert': 0,
-                    'hard': 0,
-                    'medium': 0
-                }
-            }
+        
+        # Labels to exclude (complexity indicators, merge status, and state labels)
+        excluded_labels = {'medium', 'hard', 'expert', 'merged', 'closed', 'open'}
         
         # Process each PR
         total_prs = len(prs)
         for pr in prs:
-            status = None
+            statuses = []
             
-            # Determine status from labels or merged state
-            if pr.merged:
-                status = 'Merged'
-            elif pr.labels:
-                labels_lower = [l.lower() for l in pr.labels]
-                for label, status_name in status_map.items():
-                    if label in labels_lower:
-                        status = status_name
-                        break
+            # Add all labels from the PR (excluding complexity and state labels)
+            if pr.labels:
+                for label in pr.labels:
+                    # Skip complexity labels, merged, closed, and open labels
+                    if label.lower() not in excluded_labels:
+                        statuses.append(label)
             
-            # If no status found, skip
-            if not status or status not in status_breakdown:
-                continue
+            # Only count PRs that have actual status labels (after filtering)
+            # Skip PRs with no labels or only excluded labels
             
-            # Count the PR
-            status_breakdown[status]['count'] += 1
-            
-            # Count complexity
-            if pr.complexity in ['expert', 'hard', 'medium']:
-                status_breakdown[status]['complexity'][pr.complexity] += 1
+            # Count each status for this PR
+            for status in statuses:
+                if status not in status_breakdown:
+                    status_breakdown[status] = {
+                        'count': 0,
+                        'complexity': {
+                            'expert': 0,
+                            'hard': 0,
+                            'medium': 0
+                        }
+                    }
+                
+                # Count the PR
+                status_breakdown[status]['count'] += 1
+                
+                # Count complexity
+                if pr.complexity in ['expert', 'hard', 'medium']:
+                    status_breakdown[status]['complexity'][pr.complexity] += 1
         
         # Calculate percentages and format response
         result = []
         for status, data in status_breakdown.items():
             count = data['count']
-            if count == 0:
-                continue  # Skip statuses with no PRs
             
-            # Calculate overall percentage
+            # Calculate overall percentage (based on total PRs, not total statuses)
             percent = (count / total_prs * 100) if total_prs > 0 else 0
             
             # Calculate complexity percentages

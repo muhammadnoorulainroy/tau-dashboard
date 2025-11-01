@@ -57,10 +57,10 @@ const ReviewerView = ({ lastUpdate }) => {
 
   const fetchDomains = async () => {
     try {
-      const response = await api.get(`/domains/list`);
+      const response = await api.get('/domains/list');
       setDomains(response.data.domains || []);
     } catch (error) {
-      console.error('Error fetching domains:', error);
+      // Error fetching domains
     }
   };
 
@@ -81,12 +81,11 @@ const ReviewerView = ({ lastUpdate }) => {
       if (debouncedSearchTerm) params.search = debouncedSearchTerm;
       if (selectedDomain) params.domain = selectedDomain;
       
-      const response = await api.get(`/reviewers`, { params });
+      const response = await api.get('/reviewers', { params });
       // Always replace data, never append
       setReviewers(response.data.data || []);
       setTotal(response.data.total || 0);
     } catch (error) {
-      console.error('Error fetching reviewers:', error);
       setReviewers([]);
       setTotal(0);
     } finally {

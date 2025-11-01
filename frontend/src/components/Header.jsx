@@ -74,7 +74,6 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate, user, onLogout }) => 
           duration: 3000,
           id: 'sync-progress'
         });
-        console.log(`Sync started: ${description}`);
         
         // Stop spinner after a short delay (sync runs in background)
         setTimeout(() => setSyncing(false), 1000);
@@ -85,7 +84,6 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate, user, onLogout }) => 
       }
     } catch (error) {
       toast.error('Failed to start sync');
-      console.error('Sync error:', error);
       setSyncing(false);
     }
   };
@@ -98,13 +96,11 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate, user, onLogout }) => 
       
       if (status === 'success') {
         toast.success(`Domains refreshed: ${count} domains discovered`, { duration: 3000 });
-        console.log(`Domains synced: ${message}`);
       } else {
         toast.error(message || 'Failed to refresh domains', { duration: 3000 });
       }
     } catch (error) {
       toast.error('Failed to refresh domains');
-      console.error('Domain refresh error:', error);
     } finally {
       setSyncingDomains(false);
     }
@@ -122,7 +118,6 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate, user, onLogout }) => 
       // Call backend logout API
       await apiLogout();
     } catch (error) {
-      console.error('Logout API error:', error);
       // Continue with logout even if API call fails
     } finally {
       setIsLoggingOut(false);
