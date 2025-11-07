@@ -88,15 +88,13 @@ class GitHubService:
         return None
     
     def should_process_pr(self, pr) -> bool:
-        """Check if PR matches our criteria (has proper format and tags)."""
+        """Check if PR matches our criteria (has proper format)."""
         # Check if title matches our pattern
         if not self.parse_pr_title(pr.title):
             return False
         
-        # Check if PR has labels (tags)
-        if not pr.labels:
-            return False
-            
+        # Labels are optional but recommended for accurate metrics
+        # We process PRs regardless of labels
         return True
     
     def calculate_rework_count(self, pr, db: Session) -> int:
@@ -383,6 +381,16 @@ class GitHubService:
             
             # Update labels
             db_pr.labels = [label.name for label in pr.labels]
+            
+            # Fetch and store requested reviewers (only GitHub usernames)
+            try:
+                requested_reviewers = []
+                if hasattr(pr, 'requested_reviewers') and pr.requested_reviewers:
+                    requested_reviewers = [reviewer.login for reviewer in pr.requested_reviewers]
+                db_pr.requested_reviewers = requested_reviewers
+            except Exception as e:
+                logger.debug(f"Could not fetch requested reviewers for PR #{pr.number}: {e}")
+                db_pr.requested_reviewers = []
             
             # Update counts
             db_pr.review_count = pr.review_comments

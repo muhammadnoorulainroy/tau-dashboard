@@ -9,7 +9,8 @@ import {
   MagnifyingGlassIcon,
   FunnelIcon,
   ChevronLeftIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
+  ClockIcon
 } from '@heroicons/react/24/outline';
 
 const ReviewerView = ({ lastUpdate }) => {
@@ -199,6 +200,10 @@ const ReviewerView = ({ lastUpdate }) => {
                   <option value="approval_rate_desc">Approval Rate (High to Low)</option>
                   <option value="approval_rate_asc">Approval Rate (Low to High)</option>
                 </optgroup>
+                <optgroup label="Pending Reviews">
+                  <option value="pending_reviews_desc">Pending Reviews (High to Low)</option>
+                  <option value="pending_reviews_asc">Pending Reviews (Low to High)</option>
+                </optgroup>
               </select>
             </div>
           </div>
@@ -206,7 +211,20 @@ const ReviewerView = ({ lastUpdate }) => {
       </div>
 
       {/* Scrollable Table Container */}
-      <div className="flex-1 card overflow-hidden flex flex-col">
+      <div className="flex-1 card overflow-hidden flex flex-col relative">
+        {/* Loading Overlay */}
+        {isFiltering && (
+          <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-50">
+            <div className="flex flex-col items-center">
+              <svg className="animate-spin h-12 w-12 text-blue-500 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <p className="text-sm text-gray-600 font-medium">Loading reviewers...</p>
+            </div>
+          </div>
+        )}
+        
         <div className="flex-1 overflow-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50 sticky top-0 z-10">
@@ -258,6 +276,17 @@ const ReviewerView = ({ lastUpdate }) => {
                 </th>
                 <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-32">
                   Dismissed
+                </th>
+                <th 
+                  className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 w-36"
+                  onClick={() => handleSort('pending_reviews')}
+                >
+                  <div className="flex items-center justify-center">
+                    Pending Reviews
+                    {sortBy === 'pending_reviews' && (
+                      sortOrder === 'desc' ? <ChevronDownIcon className="h-4 w-4 ml-1" /> : <ChevronUpIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Approval Rate
@@ -328,6 +357,12 @@ const ReviewerView = ({ lastUpdate }) => {
                     <td className="px-6 py-4 whitespace-nowrap text-center">
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
                         {reviewer.dismissed_reviews || 0}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                        <ClockIcon className="h-3 w-3 mr-1" />
+                        {reviewer.metrics?.pending_reviews || 0}
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">

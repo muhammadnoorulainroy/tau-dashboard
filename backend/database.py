@@ -38,6 +38,9 @@ class PullRequest(Base):
     # Labels/Tags stored as JSON array
     labels = Column(JSON, default=list)
     
+    # Requested reviewers (GitHub usernames) stored as JSON array
+    requested_reviewers = Column(JSON, default=list)
+    
     # Review and feedback tracking
     review_count = Column(Integer, default=0)
     comment_count = Column(Integer, default=0)

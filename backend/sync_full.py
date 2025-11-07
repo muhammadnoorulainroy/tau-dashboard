@@ -6,6 +6,16 @@ This script directly invokes the GitHub sync service with detailed logging.
 import sys
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
+from dotenv import load_dotenv
+from sqlalchemy import text
+
+# Load .env file from backend directory
+backend_dir = Path(__file__).resolve().parent
+env_path = backend_dir / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+
 from database import SessionLocal, PullRequest
 from github_service import GitHubService
 from config import settings
@@ -23,6 +33,21 @@ def run_full_sync():
     db = SessionLocal()
     
     try:
+        # Acquire PostgreSQL advisory lock to prevent concurrent syncs
+        # Lock ID: 123456 (same as last-10-days sync to prevent any overlap)
+        logger.info("Acquiring database lock to prevent concurrent syncs...")
+        result = db.execute(text("SELECT pg_try_advisory_lock(123456)"))
+        lock_acquired = result.scalar()
+        
+        if not lock_acquired:
+            logger.warning("Another sync process is already running. Exiting.")
+            logger.info("="*80)
+            logger.info("SYNC SKIPPED - Another sync is already in progress")
+            logger.info("="*80)
+            return 0
+        
+        logger.info("Lock acquired. Starting sync...")
+        
         # Get oldest PR to determine how far back to sync
         logger.info("="*80)
         logger.info("FULL SYNC - Starting...")
@@ -75,6 +100,13 @@ def run_full_sync():
         logger.error(f"Error during full sync: {str(e)}", exc_info=True)
         return 0
     finally:
+        # Release the advisory lock
+        try:
+            db.execute(text("SELECT pg_advisory_unlock(123456)"))
+            logger.info("Database lock released")
+        except Exception as unlock_error:
+            logger.warning(f"Error releasing lock: {str(unlock_error)}")
+        
         db.close()
 
 if __name__ == "__main__":

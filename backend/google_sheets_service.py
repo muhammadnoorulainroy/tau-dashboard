@@ -119,15 +119,20 @@ class GoogleSheetsService:
         """
         Merge data from both sheets based on email and calculate hierarchy
         
+        PRIMARY SOURCE: Sheet 2 (Email, GitHub, Role, Lead)
+        SECONDARY SOURCE: Sheet 1 (Status only)
+        
         Transformation logic:
         - For Trainers: POD Lead = their Lead, Calibrator = Lead's Lead
         - For POD Leads: POD Lead = themselves, Calibrator = their Lead
-        - For Calibrators: Calibrator = themselves
+        - For Calibrators: Calibrator = themselves (or their Lead if they report to Team Leader)
+        - For Team Leaders: At the top of hierarchy
         
         Returns list of dicts with:
         - turing_email
         - github_user
         - role
+        - status (from Sheet 1)
         - pod_lead_email
         - calibrator_email
         """
@@ -135,51 +140,47 @@ class GoogleSheetsService:
             sheet1_data = self.fetch_sheet1_data()
             sheet2_data = self.fetch_sheet2_data()
             
-            # Create mapping from email to github username
-            email_to_github = {}
-            for row in sheet2_data:
-                # Handle various possible column names
-                email = row.get('Email') or row.get('email') or row.get('       Email', '').strip()
-                github_user = row.get('Github User') or row.get('github_user') or row.get('GitHub User', '')
-                
-                if email and github_user:
-                    email_to_github[email.lower().strip()] = github_user.strip()
-            
-            logger.info(f"Created email-to-github mapping with {len(email_to_github)} entries")
-            
-            # Create email-to-record lookup for hierarchy resolution
-            email_lookup = {}
+            # Create mapping from Sheet 1: email -> status only
+            sheet1_status = {}
             for row in sheet1_data:
                 turing_email = (row.get('Turing Email') or row.get('turing_email', '')).strip().lower()
+                status = (row.get('Status') or row.get('status', '')).strip()
+                
                 if turing_email:
-                    email_lookup[turing_email] = row
+                    sheet1_status[turing_email] = status
             
-            logger.info(f"Created email lookup with {len(email_lookup)} entries")
+            logger.info(f"Created Sheet 1 status mapping with {len(sheet1_status)} entries")
+            
+            # Create email-to-record lookup from Sheet 2 for hierarchy resolution
+            sheet2_lookup = {}
+            for row in sheet2_data:
+                email = (row.get('Email') or row.get('email') or row.get('       Email', '')).strip().lower()
+                if email:
+                    sheet2_lookup[email] = {
+                        'github_user': (row.get('Github User') or row.get('github_user') or row.get('GitHub User', '')).strip(),
+                        'role': (row.get('Role') or row.get('role', '')).strip(),
+                        'lead': (row.get('Lead') or row.get('lead', '')).strip().lower()
+                    }
+            
+            logger.info(f"Created Sheet 2 lookup with {len(sheet2_lookup)} entries")
             
             # Define allowed roles (normalize to these)
             allowed_roles = ['Team Leader', 'Trainer', 'Calibrator', 'Pod Lead']
             
-            # Merge data and calculate hierarchy
+            # Process Sheet 2 data and calculate hierarchy
             merged_data = []
-            for row in sheet1_data:
-                turing_email = (row.get('Turing Email') or row.get('turing_email', '')).strip().lower()
+            for email, data in sheet2_lookup.items():
                 
-                if not turing_email:
-                    continue
-                
-                # Get status from Google Sheets
-                status = (row.get('Status') or row.get('status', '')).strip()
-                
-                # Include ALL developers regardless of status (status is stored in DB)
-                # No status filter - sync all trainers
-                
-                role = (row.get('Role') or row.get('role', '')).strip()
+                github_user = data['github_user'] if data['github_user'] else None
+                role = data['role']
+                lead_email = data['lead']
                 
                 # Normalize role - if not in allowed list, set to 'Others'
                 if role not in allowed_roles:
                     role = 'Others'
                 
-                lead_email = (row.get('Lead') or row.get('lead', '')).strip().lower()
+                # Get status from Sheet 1 (optional)
+                status = sheet1_status.get(email, '')
                 
                 pod_lead_email = None
                 calibrator_email = None
@@ -189,32 +190,36 @@ class GoogleSheetsService:
                     pod_lead_email = lead_email if lead_email else None
                     
                     # Calibrator is the Lead of the POD Lead
-                    if lead_email and lead_email in email_lookup:
-                        pod_lead_record = email_lookup[lead_email]
-                        pod_lead_lead = (pod_lead_record.get('Lead') or pod_lead_record.get('lead', '')).strip().lower()
+                    if lead_email and lead_email in sheet2_lookup:
+                        pod_lead_record = sheet2_lookup[lead_email]
+                        pod_lead_lead = pod_lead_record['lead']
                         calibrator_email = pod_lead_lead if pod_lead_lead else None
                 
                 elif role.lower() == 'pod lead':
                     # POD Lead's own email is their pod_lead_email
-                    pod_lead_email = turing_email
+                    pod_lead_email = email
                     # Their Lead is their Calibrator
                     calibrator_email = lead_email if lead_email else None
                 
                 elif role.lower() == 'calibrator':
                     # Calibrator's own email is their calibrator_email
-                    calibrator_email = turing_email
-                    # Could optionally set pod_lead_email if needed
+                    calibrator_email = email
+                    # Their Lead (if Team Leader) can be stored separately if needed
+                
+                elif role.lower() == 'team leader':
+                    # Team Leader at the top - no hierarchy above them
+                    calibrator_email = email
                 
                 merged_data.append({
-                    'turing_email': turing_email,
-                    'github_user': email_to_github.get(turing_email, ''),
+                    'turing_email': email,
+                    'github_user': github_user,
                     'role': role,
                     'status': status,
                     'pod_lead_email': pod_lead_email,
                     'calibrator_email': calibrator_email
                 })
             
-            logger.info(f"Merged {len(merged_data)} active records with calculated hierarchy")
+            logger.info(f"Merged {len(merged_data)} records (Sheet 2 primary, Sheet 1 status)")
             return merged_data
             
         except Exception as e:
