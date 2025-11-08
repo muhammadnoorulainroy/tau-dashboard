@@ -135,11 +135,13 @@ async def lifespan(app: FastAPI):
     # Start background sync task
     background_task = None
     domain_refresh_task = None
+    three_day_sync_task = None
     try:
-        from background_tasks import start_background_sync, start_domain_refresh
+        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync
         background_task = asyncio.create_task(start_background_sync(manager))
         domain_refresh_task = asyncio.create_task(start_domain_refresh())
-        logger.info("Background sync and domain refresh tasks started")
+        three_day_sync_task = asyncio.create_task(start_3_day_sync(manager))
+        logger.info("Background sync, domain refresh, and 3-day sync tasks started")
     except ImportError as e:
         logger.warning(f"Background sync module not available: {str(e)}")
     except Exception as e:
@@ -178,6 +180,15 @@ async def lifespan(app: FastAPI):
             await domain_refresh_task
         except asyncio.CancelledError:
             logger.info("Domain refresh task cancelled")
+    
+    # Cancel 3-day sync task
+    if three_day_sync_task:
+        logger.info("Cancelling 3-day sync task...")
+        three_day_sync_task.cancel()
+        try:
+            await three_day_sync_task
+        except asyncio.CancelledError:
+            logger.info("3-day sync task cancelled")
     
     # Cancel all active manual sync tasks
     if active_sync_tasks:
@@ -691,9 +702,28 @@ def get_reviewer_metrics(
 ):
     """Get reviewer metrics with pagination, search, and filters. When domain is specified, shows domain-specific stats only."""
     try:
+        # Pre-calculate pending reviews for ALL reviewers in a single query
+        # This uses PostgreSQL's jsonb_array_elements_text to unnest the requested_reviewers array
+        from sqlalchemy import text
+        
+        pending_query_sql = """
+            SELECT 
+                json_array_elements_text(requested_reviewers) as reviewer_username,
+                COUNT(*) as pending_count
+            FROM pull_requests 
+            WHERE state = 'open' 
+            AND requested_reviewers IS NOT NULL 
+            AND json_array_length(requested_reviewers) > 0
+            {domain_filter}
+            GROUP BY reviewer_username
+        """.format(domain_filter=f"AND domain = '{domain}'" if domain else "")
+        
+        pending_results = db.execute(text(pending_query_sql)).fetchall()
+        pending_reviews_map = {row[0]: row[1] for row in pending_results}
+        
         # If domain filter is applied, calculate stats from Reviews in that domain only
         if domain:
-            from sqlalchemy import func, case
+            from sqlalchemy import case
             
             # Build base query with domain filter (join Review with PullRequest)
             review_query = db.query(
@@ -739,6 +769,9 @@ def get_reviewer_metrics(
             elif sort_by == "approval_rate":
                 # Calculate approval rate for sorting: (approved / total) * 100
                 results = sorted(results, key=lambda x: (x.approved_reviews / x.total_reviews * 100) if x.total_reviews > 0 else 0, reverse=reverse_order)
+            elif sort_by == "pending_reviews":
+                # Sort by pending reviews using pre-calculated map
+                results = sorted(results, key=lambda x: pending_reviews_map.get(x.username, 0), reverse=reverse_order)
             
             total = len(results)
             
@@ -764,6 +797,9 @@ def get_reviewer_metrics(
                 
                 # Calculate approval rate for this domain only
                 approval_rate = (result.approved_reviews / result.total_reviews * 100) if result.total_reviews else 0
+                
+                # Get pending reviews from pre-calculated map
+                pending_reviews_count = pending_reviews_map.get(result.username, 0)
                 
                 # Get recent reviews in this domain
                 recent_reviews = db.query(Review).join(
@@ -795,6 +831,7 @@ def get_reviewer_metrics(
                     'last_updated': datetime.now(timezone.utc),
                     'metrics': {
                         'approval_rate': round(approval_rate, 2),
+                        'pending_reviews': pending_reviews_count,
                         'domains': rev_domains,
                         'recent_reviews': recent_reviews_list
                     }
@@ -846,8 +883,18 @@ def get_reviewer_metrics(
             else:
                 query = query.order_by(text("(CAST(reviewers.approved_reviews AS FLOAT) / NULLIF(reviewers.total_reviews, 0) * 100) ASC NULLS LAST"))
         
-        # Apply pagination
-        reviewers = query.offset(offset).limit(limit).all()
+        # Handle pagination based on sort type
+        if sort_by == "pending_reviews":
+            # Sort by pending reviews using pre-calculated map
+            all_reviewers = query.all()
+            reverse_order = (sort_order.lower() == "desc")
+            reviewers_with_pending = sorted(all_reviewers, key=lambda x: pending_reviews_map.get(x.username, 0), reverse=reverse_order)
+            
+            # Apply pagination on sorted results
+            reviewers = reviewers_with_pending[offset:offset + limit]
+        else:
+            # Apply pagination for other sort types
+            reviewers = query.offset(offset).limit(limit).all()
         
         # Enrich reviewer data with domains and recent reviews
         enriched_reviewers = []
@@ -881,6 +928,9 @@ def get_reviewer_metrics(
             
             # Calculate approval rate (approved / total * 100)
             reviewer_dict['metrics']['approval_rate'] = round((reviewer.approved_reviews / reviewer.total_reviews * 100), 2) if reviewer.total_reviews > 0 else 0.0
+            
+            # Get pending reviews from pre-calculated map
+            reviewer_dict['metrics']['pending_reviews'] = pending_reviews_map.get(reviewer.username, 0)
             
             # Add recent reviews
             recent_reviews = db.query(Review).join(
@@ -2336,6 +2386,10 @@ def get_pr_status_breakdown(
         for pr in prs:
             statuses = []
             
+            # Check if PR is merged (from PR status, not labels)
+            if pr.merged:
+                statuses.append('Merged')
+            
             # Add all labels from the PR (excluding complexity and state labels)
             if pr.labels:
                 for label in pr.labels:
@@ -2390,8 +2444,28 @@ def get_pr_status_breakdown(
                 'complexity': complexity_data
             })
         
-        # Sort by count descending
-        result.sort(key=lambda x: x['count'], reverse=True)
+        # Define priority order for specific statuses
+        priority_statuses = [
+            'expert review pending',
+            'pod lead review pending',
+            'pod lead approved',
+            'calibrator review pending',
+            'discarded',
+            'ready to merge',
+            'merged'
+        ]
+        
+        # Custom sort: priority statuses first (in order), then rest by count descending
+        def sort_key(item):
+            status_lower = item['status'].lower()
+            if status_lower in priority_statuses:
+                # Return tuple: (0 for priority, index in priority list)
+                return (0, priority_statuses.index(status_lower))
+            else:
+                # Return tuple: (1 for non-priority, negative count for descending sort)
+                return (1, -item['count'])
+        
+        result.sort(key=sort_key)
         
         return {
             'total_prs': total_prs,

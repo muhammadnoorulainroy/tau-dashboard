@@ -25,6 +25,15 @@ def _do_sync(last_sync):
         logger.error(f"Error in sync thread: {str(e)}")
         return 0
 
+def _do_3_day_sync():
+    """Run 3-day sync in a separate thread to avoid blocking the event loop."""
+    try:
+        from sync_last_3_days import sync_last_3_days
+        return sync_last_3_days()
+    except Exception as e:
+        logger.error(f"Error in 3-day sync thread: {str(e)}")
+        return 0
+
 async def start_background_sync(connection_manager):
     """Background task to periodically sync with GitHub."""
     try:
@@ -104,5 +113,49 @@ async def start_domain_refresh():
     except asyncio.CancelledError:
         # Clean shutdown
         logger.info("Domain refresh task stopped")
+        raise
+
+
+async def start_3_day_sync(connection_manager):
+    """Background task to run 3-day sync every 24 hours."""
+    try:
+        # Wait 1 hour and 15 mins before starting first sync to avoid startup congestion
+        await asyncio.sleep(4500)  # 1 hour 15 minutes
+
+        while True:
+            try:
+                logger.info("Starting 3-day full sync (background)...")
+                
+                # Run the blocking 3-day sync operation in a thread pool
+                loop = asyncio.get_event_loop()
+                count = await loop.run_in_executor(executor, _do_3_day_sync)
+                
+                if count and count > 0:
+                    logger.info(f"3-day sync complete - synced {count} PRs")
+                    # Notify WebSocket clients
+                    await connection_manager.broadcast({
+                        'type': 'data_updated',
+                        'data': {
+                            'sync_type': '3_day_full_sync',
+                            'synced_count': count,
+                            'timestamp': datetime.now(timezone.utc).isoformat()
+                        }
+                    })
+                else:
+                    logger.info("3-day sync completed (no new PRs or error occurred)")
+                
+            except asyncio.CancelledError:
+                # Task was cancelled, exit gracefully
+                logger.info("3-day sync task cancelled, shutting down...")
+                raise
+            except Exception as e:
+                logger.error(f"Error in 3-day sync: {str(e)}")
+            
+            # Wait for 24 hours between syncs
+            await asyncio.sleep(86400)  # 24 hours
+    
+    except asyncio.CancelledError:
+        # Clean shutdown
+        logger.info("3-day sync task stopped")
         raise
 

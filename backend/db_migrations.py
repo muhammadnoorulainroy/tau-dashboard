@@ -710,6 +710,32 @@ def add_pr_task_execution_columns():
         logger.error(f" Error adding task execution columns: {e}")
         return False
 
+def add_pr_requested_reviewers():
+    """
+    Add requested_reviewers JSON column to pull_requests table
+    Stores the list of GitHub usernames for reviewers requested on open PRs
+    """
+    try:
+        logger.info("Checking for requested_reviewers column in pull_requests...")
+        
+        if not column_exists('pull_requests', 'requested_reviewers'):
+            logger.info("Adding requested_reviewers column to pull_requests...")
+            with engine.connect() as connection:
+                connection.execute(text(
+                    "ALTER TABLE pull_requests ADD COLUMN requested_reviewers JSON DEFAULT '[]'::json"
+                ))
+                connection.commit()
+                
+            logger.info("Added requested_reviewers column to pull_requests")
+            return True
+        else:
+            logger.info("requested_reviewers column already exists")
+            return False
+            
+    except Exception as e:
+        logger.warning(f"Could not add requested_reviewers column: {e}")
+        return False
+
 def run_migrations():
     """
     Run all database migrations
@@ -765,6 +791,9 @@ def run_migrations():
     # Add task execution results columns to pull_requests table
     add_pr_task_execution_columns()
     
+    # Add requested_reviewers column to pull_requests table
+    add_pr_requested_reviewers()
+    
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info(" DeveloperHierarchy table managed by SQLAlchemy ORM")
     
@@ -773,4 +802,3 @@ def run_migrations():
     logger.info("=" * 60)
     
     return True
-
