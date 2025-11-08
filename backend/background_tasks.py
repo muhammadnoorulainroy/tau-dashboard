@@ -119,9 +119,9 @@ async def start_domain_refresh():
 async def start_3_day_sync(connection_manager):
     """Background task to run 3-day sync every 24 hours."""
     try:
-        # Wait 2 hours before starting first sync to avoid startup congestion
-        await asyncio.sleep(7200)  # 2 hours
-        
+        # Wait 1 hour and 15 mins before starting first sync to avoid startup congestion
+        await asyncio.sleep(4500)  # 1 hour 15 minutes
+
         while True:
             try:
                 logger.info("Starting 3-day full sync (background)...")
