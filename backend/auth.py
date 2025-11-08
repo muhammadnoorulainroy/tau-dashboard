@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 ADDITIONAL_ALLOWED_EMAILS = [
     'noman.s@turing.com',
     'ain.m@turing.com',
-    'tushar.a@turing.com'
+    'tushar.a@turing.com',
+    'tushar.thote@turing.com',
+    'raghav.bala@turing.com',
+    'satheesh.palaninathan@turing.com'
 ]
 
 # Security scheme for Bearer token
