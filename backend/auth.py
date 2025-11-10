@@ -24,7 +24,13 @@ ADDITIONAL_ALLOWED_EMAILS = [
     'tushar.a@turing.com',
     'tushar.thote@turing.com',
     'raghav.bala@turing.com',
-    'satheesh.palaninathan@turing.com'
+    'satheesh.palaninathan@turing.com',
+    'yassir.a@turing.com',
+    'babatunde.j@turing.com',
+    'chirag.rade@turing.com',
+    'ibrahim.u@turing.com',
+    'kamal.m@turing.com',
+    'zamir.f@turing.com'
 ]
 
 # Security scheme for Bearer token
