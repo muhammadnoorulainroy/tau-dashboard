@@ -736,6 +736,143 @@ def add_pr_requested_reviewers():
         logger.warning(f"Could not add requested_reviewers column: {e}")
         return False
 
+def add_task_analysis_columns():
+    """
+    Add task analysis columns to pull_requests table for cosine similarity feature
+    Includes instruction_text, pass/fail counts, actual_difficulty, and data flags
+    """
+    try:
+        logger.info("Checking for task analysis columns in pull_requests...")
+        
+        columns_to_add = [
+            ('instruction_text', 'TEXT'),
+            ('pass_count', 'INTEGER'),
+            ('fail_count', 'INTEGER'),
+            ('total_trials', 'INTEGER'),
+            ('actual_difficulty', 'VARCHAR'),
+            ('task_data_missing', 'BOOLEAN DEFAULT FALSE'),
+            ('result_data_missing', 'BOOLEAN DEFAULT FALSE'),
+            ('task_folder', 'VARCHAR')
+        ]
+        
+        with engine.connect() as connection:
+            for col_name, col_type in columns_to_add:
+                if not column_exists('pull_requests', col_name):
+                    logger.info(f"Adding {col_name} column to pull_requests...")
+                    connection.execute(text(f"""
+                        ALTER TABLE pull_requests 
+                        ADD COLUMN {col_name} {col_type}
+                    """))
+                    connection.commit()
+                    logger.info(f" Added {col_name} column")
+                else:
+                    logger.info(f" {col_name} column already exists")
+        
+        logger.info(" Task analysis columns ready")
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error adding task analysis columns: {e}")
+        return False
+
+def create_task_embedding_table():
+    """
+    Create task_embeddings table for caching instruction embeddings
+    """
+    try:
+        logger.info("Checking for task_embeddings table...")
+        
+        with engine.connect() as connection:
+            # Check if table exists
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'task_embeddings'
+                )
+            """))
+            table_exists = result.scalar()
+            
+            if not table_exists:
+                logger.info("Creating task_embeddings table...")
+                connection.execute(text("""
+                    CREATE TABLE task_embeddings (
+                        id SERIAL PRIMARY KEY,
+                        pr_id INTEGER UNIQUE NOT NULL REFERENCES pull_requests(id),
+                        embedding FLOAT[],
+                        model_name VARCHAR DEFAULT 'all-MiniLM-L6-v2',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                
+                # Create indices
+                connection.execute(text(
+                    "CREATE INDEX idx_task_embeddings_pr_id ON task_embeddings(pr_id)"
+                ))
+                
+                connection.commit()
+                logger.info(" Created task_embeddings table")
+            else:
+                logger.info(" task_embeddings table already exists")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error creating task_embeddings table: {e}")
+        return False
+
+def create_task_similarity_table():
+    """
+    Create task_similarities table for storing pairwise cosine similarities
+    """
+    try:
+        logger.info("Checking for task_similarities table...")
+        
+        with engine.connect() as connection:
+            # Check if table exists
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'task_similarities'
+                )
+            """))
+            table_exists = result.scalar()
+            
+            if not table_exists:
+                logger.info("Creating task_similarities table...")
+                connection.execute(text("""
+                    CREATE TABLE task_similarities (
+                        id SERIAL PRIMARY KEY,
+                        domain VARCHAR NOT NULL,
+                        pr_id_1 INTEGER NOT NULL REFERENCES pull_requests(id),
+                        pr_id_2 INTEGER NOT NULL REFERENCES pull_requests(id),
+                        similarity_score FLOAT NOT NULL,
+                        calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT uq_pr_pair UNIQUE (pr_id_1, pr_id_2)
+                    )
+                """))
+                
+                # Create indices
+                connection.execute(text(
+                    "CREATE INDEX idx_domain_prs ON task_similarities(domain, pr_id_1, pr_id_2)"
+                ))
+                connection.execute(text(
+                    "CREATE INDEX idx_pr1 ON task_similarities(pr_id_1)"
+                ))
+                connection.execute(text(
+                    "CREATE INDEX idx_pr2 ON task_similarities(pr_id_2)"
+                ))
+                
+                connection.commit()
+                logger.info(" Created task_similarities table")
+            else:
+                logger.info(" task_similarities table already exists")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error creating task_similarities table: {e}")
+        return False
+
 def run_migrations():
     """
     Run all database migrations
@@ -793,6 +930,13 @@ def run_migrations():
     
     # Add requested_reviewers column to pull_requests table
     add_pr_requested_reviewers()
+    
+    # Add task analysis columns for cosine similarity feature
+    add_task_analysis_columns()
+    
+    # Create task_embeddings and task_similarities tables
+    create_task_embedding_table()
+    create_task_similarity_table()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info(" DeveloperHierarchy table managed by SQLAlchemy ORM")

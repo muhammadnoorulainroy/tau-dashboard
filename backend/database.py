@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean, Text, JSON, ForeignKey, Index, UniqueConstraint, Float
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, DateTime, Boolean, Text, JSON, ForeignKey, Index, UniqueConstraint, Float, ARRAY
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.sql import func
@@ -70,6 +70,16 @@ class PullRequest(Base):
     week_num = Column(Integer, nullable=True, index=True)
     week_name = Column(String, nullable=True)
     pod_name = Column(String, nullable=True)
+    
+    # Task analysis fields (for similarity and difficulty classification)
+    instruction_text = Column(Text, nullable=True)  # From task.json
+    pass_count = Column(Integer, nullable=True)  # Trials with reward=1.0 from result.json
+    fail_count = Column(Integer, nullable=True)  # Trials with reward=0.0 from result.json
+    total_trials = Column(Integer, nullable=True)  # Length of result array
+    actual_difficulty = Column(String, nullable=True)  # Calculated: medium/hard/expert
+    task_data_missing = Column(Boolean, default=False)  # Flag if task.json missing
+    result_data_missing = Column(Boolean, default=False)  # Flag if result.json missing
+    task_folder = Column(String, nullable=True)  # Folder name for task files
     
     # Timestamps
     last_synced = Column(DateTime, default=func.now())
@@ -414,6 +424,41 @@ class DeveloperHierarchy(Base):
         Index('idx_hierarchy_calibrator', 'calibrator_email'),
     )
 
+
+class TaskEmbedding(Base):
+    """
+    Stores embeddings for task instructions (for similarity calculations)
+    Cached to avoid regenerating embeddings for the same task
+    """
+    __tablename__ = "task_embeddings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    pr_id = Column(Integer, ForeignKey("pull_requests.id"), unique=True, nullable=False, index=True)
+    embedding = Column(ARRAY(Float), nullable=False)  # ~384 dimensions for all-MiniLM-L6-v2
+    model_name = Column(String, default="all-MiniLM-L6-v2")
+    created_at = Column(DateTime, default=func.now())
+
+
+class TaskSimilarity(Base):
+    """
+    Stores pairwise cosine similarity scores between tasks
+    Calculated and cached to avoid recomputation
+    """
+    __tablename__ = "task_similarities"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    domain = Column(String, index=True, nullable=False)
+    pr_id_1 = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
+    pr_id_2 = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
+    similarity_score = Column(Float, nullable=False)
+    calculated_at = Column(DateTime, default=func.now())
+    
+    __table_args__ = (
+        Index('idx_domain_prs', 'domain', 'pr_id_1', 'pr_id_2'),
+        Index('idx_pr1', 'pr_id_1'),
+        Index('idx_pr2', 'pr_id_2'),
+        UniqueConstraint('pr_id_1', 'pr_id_2', name='uq_pr_pair'),
+    )
 
 
 def get_db():

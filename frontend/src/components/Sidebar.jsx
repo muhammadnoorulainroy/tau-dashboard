@@ -7,12 +7,14 @@ import {
   FolderIcon,
   DocumentTextIcon,
   ChartBarIcon,
-  CubeIcon
+  CubeIcon,
+  SparklesIcon
 } from '@heroicons/react/24/outline';
 
 const navigation = [
   { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
   { name: 'Interfaces', path: '/interfaces', icon: CubeIcon },
+  { name: 'Task Similarity', path: '/task-similarity', icon: SparklesIcon },
   { name: 'Developers', path: '/developers', icon: UserGroupIcon },
   { name: 'Reviewers', path: '/reviewers', icon: ClipboardDocumentCheckIcon },
   { name: 'Domains', path: '/domains', icon: FolderIcon },

@@ -136,12 +136,14 @@ async def lifespan(app: FastAPI):
     background_task = None
     domain_refresh_task = None
     three_day_sync_task = None
+    similarity_task = None
     try:
-        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync
+        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync, start_similarity_calculation
         background_task = asyncio.create_task(start_background_sync(manager))
         domain_refresh_task = asyncio.create_task(start_domain_refresh())
         three_day_sync_task = asyncio.create_task(start_3_day_sync(manager))
-        logger.info("Background sync, domain refresh, and 3-day sync tasks started")
+        similarity_task = asyncio.create_task(start_similarity_calculation())
+        logger.info("Background sync, domain refresh, 3-day sync, and similarity calculation tasks started")
     except ImportError as e:
         logger.warning(f"Background sync module not available: {str(e)}")
     except Exception as e:
@@ -2550,6 +2552,176 @@ def get_all_interfaces_summary(
         }
     except Exception as e:
         logger.error(f"Error getting interfaces summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/task-similarity/{domain}")
+async def get_task_similarity(
+    domain: str,
+    week: Optional[int] = None,
+    interface: Optional[int] = None,
+    complexity: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get task similarity data for a domain
+    Returns tasks with their similarity scores
+    """
+    try:
+        from sqlalchemy import or_
+        from database import TaskSimilarity
+        import numpy as np
+        
+        # Base query for merged PRs with instructions
+        query = db.query(PullRequest).filter(
+            PullRequest.domain == domain,
+            PullRequest.merged == True,
+            PullRequest.instruction_text != None,
+            PullRequest.instruction_text != ''
+        )
+        
+        # Apply filters
+        if week:
+            query = query.filter(PullRequest.week_num == week)
+        if interface:
+            query = query.filter(PullRequest.interface_num == interface)
+        if complexity:
+            # Use actual_difficulty for filtering (from result.json)
+            query = query.filter(PullRequest.actual_difficulty == complexity)
+        
+        tasks = query.all()
+        
+        if not tasks:
+            return {
+                "domain": domain,
+                "tasks": [],
+                "count": 0,
+                "filters": {
+                    "week": week,
+                    "interface": interface,
+                    "complexity": complexity
+                }
+            }
+        
+        # Performance optimization: Bulk fetch all similarities in ONE query
+        task_ids = [task.id for task in tasks]
+        all_similarities = db.query(TaskSimilarity).filter(
+            or_(
+                TaskSimilarity.pr_id_1.in_(task_ids),
+                TaskSimilarity.pr_id_2.in_(task_ids)
+            )
+        ).all()
+        
+        # Build a map of task_id -> list of similarities
+        similarity_map = {}
+        all_related_pr_ids = set()
+        for sim in all_similarities:
+            if sim.pr_id_1 in task_ids:
+                if sim.pr_id_1 not in similarity_map:
+                    similarity_map[sim.pr_id_1] = []
+                similarity_map[sim.pr_id_1].append(sim)
+                all_related_pr_ids.add(sim.pr_id_2)
+            if sim.pr_id_2 in task_ids:
+                if sim.pr_id_2 not in similarity_map:
+                    similarity_map[sim.pr_id_2] = []
+                similarity_map[sim.pr_id_2].append(sim)
+                all_related_pr_ids.add(sim.pr_id_1)
+        
+        # Bulk fetch all related PRs in ONE query
+        related_prs = db.query(PullRequest).filter(
+            PullRequest.id.in_(all_related_pr_ids)
+        ).all()
+        pr_map = {pr.id: pr for pr in related_prs}
+        
+        # Now build results using the pre-fetched data (optimized single-pass)
+        result = []
+        for task in tasks:
+            similarities = similarity_map.get(task.id, [])
+            
+            if similarities:
+                # Single-pass calculation: avg, max, min in one loop
+                total_score = 0.0
+                max_sim_obj = similarities[0]
+                min_sim_obj = similarities[0]
+                max_score = similarities[0].similarity_score
+                min_score = similarities[0].similarity_score
+                
+                for sim in similarities:
+                    score = sim.similarity_score
+                    total_score += score
+                    if score > max_score:
+                        max_score = score
+                        max_sim_obj = sim
+                    if score < min_score:
+                        min_score = score
+                        min_sim_obj = sim
+                
+                avg_sim = total_score / len(similarities)
+                
+                # Get the other PR for max/min
+                max_pr_id = max_sim_obj.pr_id_2 if max_sim_obj.pr_id_1 == task.id else max_sim_obj.pr_id_1
+                min_pr_id = min_sim_obj.pr_id_2 if min_sim_obj.pr_id_1 == task.id else min_sim_obj.pr_id_1
+                
+                max_pr = pr_map.get(max_pr_id)
+                min_pr = pr_map.get(min_pr_id)
+                
+                most_similar = {
+                    "pr_number": max_pr.number if max_pr else None,
+                    "similarity": float(max_score),
+                    "instruction": max_pr.instruction_text[:100] + "..." if max_pr and max_pr.instruction_text else None
+                } if max_pr else None
+                
+                least_similar = {
+                    "pr_number": min_pr.number if min_pr else None,
+                    "similarity": float(min_score),
+                    "instruction": min_pr.instruction_text[:100] + "..." if min_pr and min_pr.instruction_text else None
+                } if min_pr else None
+            else:
+                avg_sim = None
+                most_similar = None
+                least_similar = None
+            
+            result.append({
+                "pr_number": task.number,
+                "pr_title": task.title,
+                "instruction": task.instruction_text,
+                "instruction_preview": task.instruction_text[:150] + "..." if task.instruction_text and len(task.instruction_text) > 150 else task.instruction_text,
+                "difficulty": task.actual_difficulty,
+                "complexity_label": task.complexity,  # Original label from PR
+                "pass_count": task.pass_count,
+                "fail_count": task.fail_count,
+                "total_trials": task.total_trials,
+                "week_num": task.week_num,
+                "interface_num": task.interface_num,
+                "pod_name": task.pod_name,
+                "trainer_name": task.trainer_name,
+                "merged_at": task.merged_at.isoformat() if task.merged_at else None,
+                "avg_similarity": float(avg_sim) if avg_sim else None,
+                "most_similar": most_similar,
+                "least_similar": least_similar,
+                "similarity_count": len(similarities) if similarities else 0
+            })
+        
+        # Sort by average similarity (descending) by default
+        result.sort(key=lambda x: x["avg_similarity"] if x["avg_similarity"] is not None else -1, reverse=True)
+        
+        # Extract GitHub repo URL base (e.g., "https://github.com/org/repo")
+        github_repo_parts = settings.github_repo.split("/")
+        github_url_base = f"https://github.com/{'/'.join(github_repo_parts)}"
+        
+        return {
+            "domain": domain,
+            "tasks": result,
+            "count": len(result),
+            "github_url_base": github_url_base,
+            "filters": {
+                "week": week,
+                "interface": interface,
+                "complexity": complexity
+            }
+        }
+    
+    except Exception as e:
+        logger.error(f"Error getting task similarity: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

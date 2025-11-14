@@ -10,6 +10,7 @@ import ReviewerView from './components/ReviewerView';
 import DomainView from './components/DomainView';
 import PullRequestsView from './components/PullRequestsView';
 import InterfaceView from './components/InterfaceView';
+import TaskSimilarityView from './components/TaskSimilarityView';
 import AggregationView from './components/AggregationView';
 import Login from './components/Login';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -23,7 +24,7 @@ function MainLayout({ children, sidebarOpen, setSidebarOpen, lastUpdate, user, o
   const location = useLocation();
   
   // Determine if current route should have full page scroll or not
-  const fullScrollRoutes = ['/dashboard', '/domains', '/interfaces'];
+  const fullScrollRoutes = ['/dashboard', '/domains', '/interfaces', '/task-similarity'];
   const isFullScroll = fullScrollRoutes.includes(location.pathname);
   
   return (
@@ -285,6 +286,23 @@ function App() {
                     onLogout={handleLogout}
                   >
                     <InterfaceView lastUpdate={lastUpdate} />
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
+            
+            <Route
+              path="/task-similarity"
+              element={
+                <ProtectedRoute isAuthenticated={isAuthenticated}>
+                  <MainLayout
+                    sidebarOpen={sidebarOpen}
+                    setSidebarOpen={setSidebarOpen}
+                    lastUpdate={lastUpdate}
+                    user={user}
+                    onLogout={handleLogout}
+                  >
+                    <TaskSimilarityView lastUpdate={lastUpdate} />
                   </MainLayout>
                 </ProtectedRoute>
               }
