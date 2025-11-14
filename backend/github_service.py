@@ -297,6 +297,292 @@ class GitHubService:
         
         return None
     
+    def get_task_file_paths(self, db_pr: PullRequest, filename: str) -> List[str]:
+        """
+        Returns possible paths for task.json or result.json
+        
+        Old convention (Week ≤12): week_{num}/{pod_name}/{pr_title}/filename
+        Example: week_11/fabio_pod/matheus.c-fund_finance-3-hard-1758726938/result.json
+        
+        New convention (Week ≥13): week_{num}_{domain}/{pod_name}/{pr_title}/filename
+        Example: week_14_incident_management_technical/neeraj_pod/toheeb.adedokun-hr_talent-2-expert-1762764502/task.json
+        """
+        paths = []
+        
+        # Use PR title as task folder name
+        task_folder = db_pr.task_folder or db_pr.title
+        pod_name = db_pr.pod_name
+        week_num = db_pr.week_num
+        domain = db_pr.domain
+        
+        if not week_num or not pod_name:
+            # No week/pod info - try flat structure as fallback
+            paths.append(f"{task_folder}/{filename}")
+            return paths
+        
+        # New convention (Week 13+): week_{num}_{domain}/{pod_name}/{task_folder}/filename
+        if week_num >= 13:
+            paths.append(f"week_{week_num}_{domain}/{pod_name}/{task_folder}/{filename}")
+        
+        # Old convention (Week 12-): week_{num}/{pod_name}/{task_folder}/filename
+        if week_num <= 12:
+            paths.append(f"week_{week_num}/{pod_name}/{task_folder}/{filename}")
+        
+        # Fallback: try both formats if we're not sure about the cutoff
+        # This handles edge cases where the convention might have changed mid-week
+        if week_num == 12 or week_num == 13:
+            # Try the alternate format as well
+            paths.append(f"week_{week_num}/{pod_name}/{task_folder}/{filename}")
+            paths.append(f"week_{week_num}_{domain}/{pod_name}/{task_folder}/{filename}")
+        
+        return paths
+    
+    def extract_instruction_from_task_json(self, task_json: dict) -> Optional[str]:
+        """Extract instruction from task.json"""
+        try:
+            return task_json.get("task", {}).get("instruction")
+        except Exception as e:
+            logger.error(f"Error extracting instruction: {e}")
+            return None
+    
+    def calculate_pass_fail_counts(self, result_json: list) -> dict:
+        """
+        Count passes and fails from result.json
+        Returns: {pass_count, fail_count, total_trials}
+        """
+        if not isinstance(result_json, list):
+            logger.error("result.json is not an array")
+            return {"pass_count": 0, "fail_count": 0, "total_trials": 0}
+        
+        pass_count = sum(1 for trial in result_json if trial.get("reward") == 1.0)
+        fail_count = sum(1 for trial in result_json if trial.get("reward") == 0.0)
+        total_trials = len(result_json)
+        
+        return {
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+            "total_trials": total_trials
+        }
+    
+    def calculate_actual_difficulty(self, pass_count: int, total_trials: int) -> str:
+        """
+        Calculate difficulty based on pass rate (percentage)
+        
+        Based on standard of 16 trials:
+        - Medium: 10-12 passes (62.5% - 75%)
+        - Hard: 6-9 passes (37.5% - 56.25%)
+        - Expert: 3-5 passes (18.75% - 31.25%)
+        - Not enough trials: < 3 trials (insufficient data)
+        - Unclassified: Pass rate outside defined ranges
+        """
+        # Check if we have enough trials for meaningful classification
+        if total_trials < 3:
+            return "not_enough_trials"
+        
+        if total_trials == 0:
+            return "unclassified"
+        
+        pass_rate = pass_count / total_trials
+        
+        # Medium: 62.5% to 75%
+        if 0.625 <= pass_rate <= 0.75:
+            return "medium"
+        # Hard: 37.5% to 56.25%
+        elif 0.375 <= pass_rate <= 0.5625:
+            return "hard"
+        # Expert: 18.75% to 31.25%
+        elif 0.1875 <= pass_rate <= 0.3125:
+            return "expert"
+        else:
+            return "unclassified"
+    
+    def fetch_and_store_task_data(self, db_pr: PullRequest):
+        """Fetch task.json and result.json for merged PRs by looking at PR file changes"""
+        import json
+        from github import GithubException
+        
+        # First, check if PR matches the required naming pattern
+        # Pattern: {trainer_name}-{domain}-{interface_num}-{complexity_level}-{timestamp}
+        parsed = self.parse_pr_title(db_pr.title)
+        if not parsed:
+            logger.debug(f"PR #{db_pr.number}: Skipping - title doesn't match naming pattern")
+            db_pr.task_data_missing = True
+            db_pr.result_data_missing = True
+            return
+        
+        try:
+            # Get the PR object from GitHub
+            pr = self.repo.get_pull(db_pr.number)
+            
+            # Get files changed in this PR
+            files = pr.get_files()
+            
+            task_json_path = None
+            result_json_path = None
+            
+            # Extract timestamp from PR title (last part after final dash)
+            # e.g., "harish_kumar-fund_finance-3-expert-1758705844" -> "1758705844"
+            pr_title = db_pr.title
+            timestamp = str(db_pr.timestamp or pr_title.split('-')[-1])
+            
+            # Debug: Show files in PR
+            all_files = [f.filename for f in files]
+            logger.info(f"PR #{db_pr.number}: Looking for timestamp '{timestamp}' in {len(all_files)} files")
+            logger.debug(f"PR #{db_pr.number}: Files: {all_files[:5]}")  # Show first 5 files
+            
+            # Find task.json and result.json in the file changes
+            # Look for files that:
+            # 1. End with /task.json or /result.json
+            # 2. Contain the PR's timestamp in the path (unique identifier)
+            # This handles both old and new conventions without hardcoding folder structure
+            for file in files:
+                filename = file.filename
+                
+                # Check if this file belongs to this PR (contains timestamp)
+                if timestamp in filename:
+                    if filename.endswith('/task.json'):
+                        task_json_path = filename
+                        logger.info(f"PR #{db_pr.number}: Found task.json at {filename}")
+                    # Check for both 'result.json' and 'results.json' (some PRs use plural)
+                    elif filename.endswith('/result.json') or filename.endswith('/results.json'):
+                        result_json_path = filename
+                        logger.info(f"PR #{db_pr.number}: Found result file at {filename}")
+                
+                # Break early if we found both
+                if task_json_path and result_json_path:
+                    break
+            
+            if not task_json_path and not result_json_path:
+                logger.warning(f"PR #{db_pr.number}: No task.json or result.json found in file changes!")
+            
+            # Fetch task.json
+            if task_json_path:
+                try:
+                    # Try fetching from main branch first
+                    try:
+                        content = self.repo.get_contents(task_json_path, ref="main")
+                    except Exception as main_error:
+                        # If not on main, fetch from the merge commit
+                        logger.info(f"PR #{db_pr.number}: task.json not on main ({str(main_error)[:50]}), fetching from merge commit")
+                        content = self.repo.get_contents(task_json_path, ref=pr.merge_commit_sha)
+                    
+                    # Handle different content types - try multiple decoding methods
+                    task_json = None
+                    last_error = None
+                    
+                    # Method 1: Try decoded_content
+                    try:
+                        if isinstance(content.decoded_content, bytes):
+                            task_json = json.loads(content.decoded_content.decode('utf-8'))
+                        elif isinstance(content.decoded_content, str):
+                            task_json = json.loads(content.decoded_content)
+                    except (AssertionError, AttributeError, ValueError, json.JSONDecodeError) as e:
+                        last_error = e
+                    
+                    # Method 2: Try base64 decoding from content
+                    if task_json is None and hasattr(content, 'content') and content.content:
+                        try:
+                            import base64
+                            decoded = base64.b64decode(content.content).decode('utf-8')
+                            task_json = json.loads(decoded)
+                        except Exception as e:
+                            last_error = e
+                    
+                    # Method 3: Try downloading the file directly
+                    if task_json is None:
+                        try:
+                            # Re-fetch as a blob
+                            blob = self.repo.get_git_blob(content.sha)
+                            import base64
+                            decoded = base64.b64decode(blob.content).decode('utf-8')
+                            task_json = json.loads(decoded)
+                        except Exception as e:
+                            last_error = e
+                    
+                    if task_json is None:
+                        raise Exception(f"All decoding methods failed. Last error: {last_error}")
+                    
+                    db_pr.instruction_text = self.extract_instruction_from_task_json(task_json)
+                    db_pr.task_data_missing = False
+                    logger.info(f"PR #{db_pr.number}: Successfully read task.json")
+                except Exception as e:
+                    db_pr.task_data_missing = True
+                    logger.error(f"PR #{db_pr.number}: Error reading task.json: {type(e).__name__}: {e}")
+            else:
+                db_pr.task_data_missing = True
+                logger.debug(f"PR #{db_pr.number}: task.json not in file changes")
+            
+            # Fetch result.json
+            if result_json_path:
+                try:
+                    # Try fetching from main branch first
+                    try:
+                        content = self.repo.get_contents(result_json_path, ref="main")
+                    except Exception as main_error:
+                        # If not on main, fetch from the merge commit
+                        logger.info(f"PR #{db_pr.number}: result.json not on main ({str(main_error)[:50]}), fetching from merge commit")
+                        content = self.repo.get_contents(result_json_path, ref=pr.merge_commit_sha)
+                    
+                    # Handle different content types - try multiple decoding methods
+                    result_json = None
+                    last_error = None
+                    
+                    # Method 1: Try decoded_content
+                    try:
+                        if isinstance(content.decoded_content, bytes):
+                            result_json = json.loads(content.decoded_content.decode('utf-8'))
+                        elif isinstance(content.decoded_content, str):
+                            result_json = json.loads(content.decoded_content)
+                    except (AssertionError, AttributeError, ValueError, json.JSONDecodeError) as e:
+                        last_error = e
+                    
+                    # Method 2: Try base64 decoding from content
+                    if result_json is None and hasattr(content, 'content') and content.content:
+                        try:
+                            import base64
+                            decoded = base64.b64decode(content.content).decode('utf-8')
+                            result_json = json.loads(decoded)
+                        except Exception as e:
+                            last_error = e
+                    
+                    # Method 3: Try downloading the file directly
+                    if result_json is None:
+                        try:
+                            # Re-fetch as a blob
+                            blob = self.repo.get_git_blob(content.sha)
+                            import base64
+                            decoded = base64.b64decode(blob.content).decode('utf-8')
+                            result_json = json.loads(decoded)
+                        except Exception as e:
+                            last_error = e
+                    
+                    if result_json is None:
+                        raise Exception(f"All decoding methods failed. Last error: {last_error}")
+                    
+                    counts = self.calculate_pass_fail_counts(result_json)
+                    db_pr.pass_count = counts["pass_count"]
+                    db_pr.fail_count = counts["fail_count"]
+                    db_pr.total_trials = counts["total_trials"]
+                    db_pr.actual_difficulty = self.calculate_actual_difficulty(db_pr.pass_count, db_pr.total_trials)
+                    db_pr.result_data_missing = False
+                    pass_rate = (db_pr.pass_count / db_pr.total_trials * 100) if db_pr.total_trials > 0 else 0
+                    logger.info(f"PR #{db_pr.number}: Successfully read result.json - {db_pr.pass_count}/{db_pr.total_trials} passed ({pass_rate:.1f}%), difficulty={db_pr.actual_difficulty}")
+                except Exception as e:
+                    db_pr.result_data_missing = True
+                    logger.error(f"PR #{db_pr.number}: Error reading result.json: {type(e).__name__}: {e}")
+            else:
+                db_pr.result_data_missing = True
+                logger.debug(f"PR #{db_pr.number}: result.json not in file changes")
+                
+        except GithubException as e:
+            logger.error(f"PR #{db_pr.number}: GitHub API error: {e}")
+            db_pr.task_data_missing = True
+            db_pr.result_data_missing = True
+        except Exception as e:
+            logger.error(f"PR #{db_pr.number}: Error fetching task data: {e}")
+            db_pr.task_data_missing = True
+            db_pr.result_data_missing = True
+    
     def sync_pull_request(self, pr, db: Session, skip_nested_data: bool = False) -> Optional[PullRequest]:
         """
         Sync a single pull request to the database.
@@ -449,7 +735,11 @@ class GitHubService:
                     if week and pod:
                         db_pr.week_id = week.id
                         db_pr.pod_id = pod.id
-                        logger.debug(f"PR #{pr.number}: Parsed week/pod from files")
+                        # Set denormalized fields for faster queries
+                        db_pr.week_num = week.week_num
+                        db_pr.week_name = week.week_name
+                        db_pr.pod_name = pod.name
+                        logger.debug(f"PR #{pr.number}: Parsed week/pod from files (week {week.week_num}, pod {pod.name})")
                     else:
                         if not week:
                             logger.warning(f"PR {pr.number}: Failed to create/get week {week_num}")
@@ -498,6 +788,14 @@ class GitHubService:
             if not skip_nested_data:
                 self.sync_reviews(pr, db_pr, db)
                 self.sync_check_runs(pr, db_pr, db)
+                
+                # Fetch task.json and result.json for merged PRs
+                if db_pr.merged and db_pr.merged_at:
+                    try:
+                        self.fetch_and_store_task_data(db_pr)
+                        logger.debug(f"PR #{pr.number}: Task data fetched successfully")
+                    except Exception as e:
+                        logger.warning(f"PR #{pr.number}: Could not fetch task data: {e}")
             else:
                 logger.debug(f"PR #{pr.number}: Skipping reviews/check runs fetch (nested data skipped)")
             

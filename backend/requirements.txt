@@ -15,4 +15,7 @@ gspread==6.1.2
 google-auth==2.35.0
 google-auth-oauthlib==1.2.0
 PyJWT==2.8.0
+sentence-transformers==3.3.1
+scikit-learn==1.5.2
+numpy==2.2.1
 

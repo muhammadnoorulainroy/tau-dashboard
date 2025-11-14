@@ -34,6 +34,42 @@ def _do_3_day_sync():
         logger.error(f"Error in 3-day sync thread: {str(e)}")
         return 0
 
+def _do_similarity_calculation():
+    """Run similarity calculation in a separate thread to avoid blocking the event loop."""
+    try:
+        from similarity_service import SimilarityService
+        db = SessionLocal()
+        
+        similarity_service = SimilarityService()
+        
+        # Get all domains with merged PRs that have instructions
+        from database import PullRequest
+        domains = db.query(PullRequest.domain).filter(
+            PullRequest.merged == True,
+            PullRequest.instruction_text != None,
+            PullRequest.instruction_text != ''
+        ).distinct().all()
+        
+        total_domains = len(domains)
+        processed = 0
+        
+        logger.info(f"Starting similarity calculation for {total_domains} domains")
+        
+        for (domain,) in domains:
+            try:
+                logger.info(f"Calculating similarities for domain: {domain}")
+                similarity_service.calculate_similarity_for_domain(domain, db)
+                processed += 1
+            except Exception as e:
+                logger.error(f"Error calculating similarities for {domain}: {e}")
+        
+        db.close()
+        logger.info(f"Similarity calculation complete for {processed}/{total_domains} domains")
+        return processed
+    except Exception as e:
+        logger.error(f"Error in similarity calculation thread: {str(e)}")
+        return 0
+
 async def start_background_sync(connection_manager):
     """Background task to periodically sync with GitHub."""
     try:
@@ -157,5 +193,40 @@ async def start_3_day_sync(connection_manager):
     except asyncio.CancelledError:
         # Clean shutdown
         logger.info("3-day sync task stopped")
+        raise
+
+
+async def start_similarity_calculation():
+    """Background task to calculate task similarities hourly."""
+    try:
+        # Wait 1 hour 30 mins before starting first calculation to allow initial sync to complete
+        await asyncio.sleep(5400)  # 1 hour 30 minutes
+        
+        while True:
+            try:
+                logger.info("Starting similarity calculation (background)...")
+                
+                # Run the blocking similarity calculation in a thread pool
+                loop = asyncio.get_event_loop()
+                domains_processed = await loop.run_in_executor(executor, _do_similarity_calculation)
+                
+                if domains_processed and domains_processed > 0:
+                    logger.info(f"Similarity calculation complete - processed {domains_processed} domains")
+                else:
+                    logger.info("Similarity calculation completed (no domains processed)")
+                
+            except asyncio.CancelledError:
+                # Task was cancelled, exit gracefully
+                logger.info("Similarity calculation task cancelled, shutting down...")
+                raise
+            except Exception as e:
+                logger.error(f"Error in similarity calculation: {str(e)}")
+            
+            # Wait for 1 hour between calculations
+            await asyncio.sleep(3600)  # 1 hour
+    
+    except asyncio.CancelledError:
+        # Clean shutdown
+        logger.info("Similarity calculation task stopped")
         raise
 
