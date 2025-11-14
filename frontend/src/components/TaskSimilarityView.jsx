@@ -5,8 +5,26 @@ import {
   FunnelIcon,
   ArrowsPointingOutIcon,
   ArrowDownTrayIcon,
-  ChevronUpDownIcon
+  ChevronUpDownIcon,
+  QuestionMarkCircleIcon
 } from '@heroicons/react/24/outline';
+
+// Tooltip component for inline help
+const Tooltip = ({ text, children }) => {
+  return (
+    <div className="relative inline-flex items-center group">
+      {children}
+      <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 hidden group-hover:block z-[9999] pointer-events-none">
+        <div className="bg-gray-900 text-white text-sm rounded py-3 px-4 w-80 whitespace-normal shadow-xl border border-gray-700 normal-case">
+          {text}
+          <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-[-1px]">
+            <div className="border-4 border-transparent border-b-gray-900"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const TaskSimilarityView = ({ lastUpdate }) => {
   const [tasks, setTasks] = useState([]);
@@ -241,6 +259,46 @@ const TaskSimilarityView = ({ lastUpdate }) => {
         </button>
       </div>
 
+      {/* Info Banner */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="flex items-start">
+          <QuestionMarkCircleIcon className="h-5 w-5 text-blue-600 mt-0.5 mr-3 flex-shrink-0" />
+          <div className="text-sm text-blue-900">
+            <p className="font-semibold mb-1">How Task Similarity Works</p>
+            <p className="mb-2">
+              We analyze semantic similarity between task instructions. Each task is converted into a numerical vector (embedding), 
+              and we calculate how similar tasks are to each other using cosine similarity (0-1 scale).
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <div>
+                <span className="font-semibold">Similarity Scores:</span>
+                <ul className="mt-1 space-y-0.5 ml-2">
+                  <li className="flex items-center">• <span className="inline-block w-14 ml-1">0.9-1.0:</span> Near duplicates</li>
+                  <li className="flex items-center">• <span className="inline-block w-14 ml-1">0.7-0.8:</span> Related tasks</li>
+                  <li className="flex items-center">• <span className="inline-block w-14 ml-1">&lt;0.5:</span> Different tasks</li>
+                </ul>
+              </div>
+              <div>
+                <span className="font-semibold">Difficulty Levels:</span>
+                <ul className="mt-1 space-y-1 ml-2">
+                  <li className="flex items-center">• <span className="px-1.5 py-0.5 bg-green-100 text-green-800 rounded text-xs font-medium ml-1 mr-2 inline-block w-16 text-center">Medium</span> 62.5-75% pass rate</li>
+                  <li className="flex items-center">• <span className="px-1.5 py-0.5 bg-yellow-100 text-yellow-800 rounded text-xs font-medium ml-1 mr-2 inline-block w-16 text-center">Hard</span> 37.5-56% pass rate</li>
+                  <li className="flex items-center">• <span className="px-1.5 py-0.5 bg-red-100 text-red-800 rounded text-xs font-medium ml-1 mr-2 inline-block w-16 text-center">Expert</span> 18.75-31% pass rate</li>
+                </ul>
+              </div>
+              <div>
+                <span className="font-semibold">Useful For:</span>
+                <ul className="mt-1 space-y-0.5 ml-2">
+                  <li>• Finding duplicate tasks</li>
+                  <li>• Grouping related tasks</li>
+                  <li>• Analyzing task difficulty</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Filters */}
       <div className="card">
         <div className="flex items-center mb-4">
@@ -357,39 +415,69 @@ const TaskSimilarityView = ({ lastUpdate }) => {
       </div>
 
       {/* Tasks Table */}
-      <div className="card overflow-hidden">
+      <div className="card">
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+            <thead className="bg-gray-50 relative">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
                   <button onClick={() => handleSort('pr_number')} className="flex items-center hover:text-gray-700">
                     PR # <ChevronUpDownIcon className="h-4 w-4 ml-1" />
                   </button>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Instruction
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
+                  <div className="flex items-center gap-1">
+                    Instruction
+                    <Tooltip text="The task instruction text from task.json. Click 'Show Full' to expand.">
+                      <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                    </Tooltip>
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <button onClick={() => handleSort('difficulty')} className="flex items-center hover:text-gray-700">
-                    Difficulty <ChevronUpDownIcon className="h-4 w-4 ml-1" />
-                  </button>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => handleSort('difficulty')} className="flex items-center hover:text-gray-700">
+                      Difficulty <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                    </button>
+                    <Tooltip text="Calculated from pass rates: Medium (62.5-75%), Hard (37.5-56%), Expert (18.75-31%). Blue badge means insufficient trials (<3).">
+                      <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                    </Tooltip>
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <button onClick={() => handleSort('pass_count')} className="flex items-center hover:text-gray-700">
-                    Pass/Total <ChevronUpDownIcon className="h-4 w-4 ml-1" />
-                  </button>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => handleSort('pass_count')} className="flex items-center hover:text-gray-700">
+                      Pass/Total <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                    </button>
+                    <Tooltip text="Number of successful trials out of total trials from result.json (e.g., 7/16 = 7 passes out of 16 trials).">
+                      <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                    </Tooltip>
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <button onClick={() => handleSort('avg_similarity')} className="flex items-center hover:text-gray-700">
-                    Avg Similarity <ChevronUpDownIcon className="h-4 w-4 ml-1" />
-                  </button>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => handleSort('avg_similarity')} className="flex items-center hover:text-gray-700">
+                      Avg Similarity <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                    </button>
+                    <Tooltip text="Average cosine similarity (0-1) with all other tasks in this domain. Higher = more similar to other tasks. 0.7+ means highly related tasks.">
+                      <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                    </Tooltip>
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Most Similar
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
+                  <div className="flex items-center gap-1">
+                    Most Similar
+                    <Tooltip text="The task with the highest similarity score to this one. Useful for finding duplicate or near-duplicate tasks.">
+                      <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                    </Tooltip>
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Least Similar
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
+                  <div className="flex items-center gap-1">
+                    Least Similar
+                    <Tooltip text="The task with the lowest similarity score to this one. Shows the most different task in the domain.">
+                      <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                    </Tooltip>
+                  </div>
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
