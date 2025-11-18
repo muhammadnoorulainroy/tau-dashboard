@@ -20,6 +20,7 @@ const ReviewerView = ({ lastUpdate }) => {
   const [isFiltering, setIsFiltering] = useState(false);
   const [sortBy, setSortBy] = useState('total_reviews');
   const [sortOrder, setSortOrder] = useState('desc');
+  const [clickedColumn, setClickedColumn] = useState(null); // Track which column was last clicked
   
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
@@ -96,12 +97,16 @@ const ReviewerView = ({ lastUpdate }) => {
   };
 
   const handleSort = (field) => {
-    if (sortBy === field) {
+    if (sortBy === field && clickedColumn === field) {
+      // User clicked the same column again - toggle the order
       setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc');
     } else {
+      // First click on this column or switching to a different column - start with descending
       setSortBy(field);
       setSortOrder('desc');
     }
+    // Mark this column as clicked
+    setClickedColumn(field);
   };
 
   if (loading) {
