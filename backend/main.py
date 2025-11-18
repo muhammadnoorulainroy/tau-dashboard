@@ -483,185 +483,301 @@ def get_developer_metrics(
 ):
     """Get developer metrics with pagination, search, and filters. When domain is specified, shows domain-specific stats only."""
     try:
-        # If domain filter is applied, calculate stats from PRs in that domain only
+        # If domain filter is applied, show ALL users but with stats from that domain only
         if domain:
-            from sqlalchemy import func, case
-            
-            # Build base query with domain filter
-            pr_query = db.query(
-                PullRequest.developer_username.label('username'),
-                func.count(PullRequest.id).label('total_prs'),
-                func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
-                func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
-                func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
-                func.sum(PullRequest.rework_count).label('total_rework'),
-                func.avg(case((PullRequest.merged == True, PullRequest.rework_count), else_=None)).label('avg_rework')
-            ).filter(
-                PullRequest.domain == domain
-            ).group_by(PullRequest.developer_username)
-            
-            # Apply search filter (by username or email)
-            if search:
-                # Find github users with matching email
-                matching_users = db.query(DeveloperHierarchy.github_user).filter(
-                    DeveloperHierarchy.turing_email.ilike(f'%{search}%')
-                ).all()
-                github_usernames = [user[0] for user in matching_users] if matching_users else []
-                
-                # Filter by username or matching github usernames
-                from sqlalchemy import or_
-                conditions = [PullRequest.developer_username.ilike(f"%{search}%")]
-                if github_usernames:
-                    conditions.append(PullRequest.developer_username.in_(github_usernames))
-                pr_query = pr_query.filter(or_(*conditions))
-            
-            # Get all results for sorting and pagination
-            results = pr_query.all()
-            
-            # Sort results (reverse=True for desc, reverse=False for asc)
-            reverse_order = (sort_order.lower() == "desc")
-            
-            if sort_by == "total_prs":
-                results = sorted(results, key=lambda x: x.total_prs or 0, reverse=reverse_order)
-            elif sort_by == "open_prs":
-                results = sorted(results, key=lambda x: x.open_prs or 0, reverse=reverse_order)
-            elif sort_by == "merged_prs":
-                results = sorted(results, key=lambda x: x.merged_prs or 0, reverse=reverse_order)
-            elif sort_by == "closed_prs":
-                results = sorted(results, key=lambda x: x.closed_prs or 0, reverse=reverse_order)
-            elif sort_by == "total_rework":
-                results = sorted(results, key=lambda x: x.total_rework or 0, reverse=reverse_order)
-            elif sort_by == "avg_rework":
-                results = sorted(results, key=lambda x: x.avg_rework or 0, reverse=reverse_order)
-            
-            total = len(results)
-            
-            # Apply pagination
-            paginated_results = results[offset:offset + limit]
-            
-            # Build response with domain-specific stats and domain list
+            from sqlalchemy import func, case, or_
             from datetime import datetime, timezone
+            
+            # Step 1: Get all unique usernames (UNION of sheet trainers and PR creators in this domain)
+            all_usernames = set()
+            username_to_hierarchy = {}
+            
+            # Get trainers from Google Sheets
+            all_trainers = db.query(DeveloperHierarchy).filter(
+                DeveloperHierarchy.role == 'Trainer'
+            ).all()
+            
+            for trainer in all_trainers:
+                if trainer.github_user:
+                    all_usernames.add(trainer.github_user)
+                    username_to_hierarchy[trainer.github_user] = trainer
+                else:
+                    email_key = f"__EMAIL__{trainer.turing_email}"
+                    all_usernames.add(email_key)
+                    username_to_hierarchy[email_key] = trainer
+            
+            # Get all users who have created PRs in this domain (even if not in sheet)
+            pr_creators = db.query(PullRequest.developer_username).filter(
+                PullRequest.domain == domain
+            ).distinct().all()
+            for (username,) in pr_creators:
+                if username:
+                    all_usernames.add(username)
+                    if username not in username_to_hierarchy:
+                        username_to_hierarchy[username] = None
+            
+            # Step 2: Apply search filter
+            if search:
+                filtered_usernames = set()
+                for username in all_usernames:
+                    if username.startswith("__EMAIL__"):
+                        email = username.replace("__EMAIL__", "")
+                        if search.lower() in email.lower():
+                            filtered_usernames.add(username)
+                    else:
+                        if search.lower() in username.lower():
+                            filtered_usernames.add(username)
+                        hierarchy = username_to_hierarchy.get(username)
+                        if hierarchy and hierarchy.turing_email and search.lower() in hierarchy.turing_email.lower():
+                            filtered_usernames.add(username)
+                all_usernames = filtered_usernames
+            
+            # Step 3: Build developer data with domain-specific PR stats
             developers_data = []
-            for result in paginated_results:
-                # Get domains this developer has worked on (for display)
-                dev_domains_query = db.query(PullRequest.domain).filter(
-                    PullRequest.developer_username == result.username
-                ).distinct()
-                dev_domains = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+            for username_key in all_usernames:
+                hierarchy = username_to_hierarchy.get(username_key)
                 
-                # Fetch email from DeveloperHierarchy table
-                hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=result.username).first()
-                email = hierarchy.turing_email if hierarchy else None
+                if username_key.startswith("__EMAIL__"):
+                    github_user = None
+                    email = username_key.replace("__EMAIL__", "")
+                    display_username = email.split('@')[0]
+                else:
+                    github_user = username_key
+                    email = hierarchy.turing_email if hierarchy else None
+                    display_username = github_user
                 
-                # Calculate merge rate for this domain only
-                merge_rate = (result.merged_prs / result.total_prs * 100) if result.total_prs else 0
+                # Get PR stats for this trainer in this domain (or zeros if no PRs)
+                if github_user:
+                    pr_stats = db.query(
+                        func.count(PullRequest.id).label('total_prs'),
+                        func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
+                        func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                        func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
+                        func.sum(PullRequest.rework_count).label('total_rework'),
+                        func.avg(case((PullRequest.merged == True, PullRequest.rework_count), else_=None)).label('avg_rework')
+                    ).filter(
+                        PullRequest.developer_username == github_user,
+                        PullRequest.domain == domain
+                    ).first()
+                    
+                    total_prs = pr_stats.total_prs or 0
+                    open_prs = pr_stats.open_prs or 0
+                    merged_prs = pr_stats.merged_prs or 0
+                    closed_prs = pr_stats.closed_prs or 0
+                    total_rework = pr_stats.total_rework or 0
+                    avg_rework = pr_stats.avg_rework or 0
+                    
+                    # Get ALL domains this trainer has worked on (for context)
+                    if total_prs > 0:
+                        dev_domains_query = db.query(PullRequest.domain).filter(
+                            PullRequest.developer_username == github_user
+                        ).distinct()
+                        dev_domains = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+                    else:
+                        dev_domains = []
+                else:
+                    # Trainer has no GitHub user - show zeros
+                    total_prs = 0
+                    open_prs = 0
+                    merged_prs = 0
+                    closed_prs = 0
+                    total_rework = 0
+                    avg_rework = 0
+                    dev_domains = []
+                
+                # Calculate metrics
+                merge_rate = round((merged_prs / total_prs) * 100, 2) if total_prs > 0 else 0.0
                 
                 developers_data.append({
-                    'id': 0,  # Placeholder ID for domain-filtered view
-                    'username': result.username,
-                    'github_login': result.username,
-                    'email': email,
-                    'total_prs': result.total_prs or 0,
-                    'open_prs': result.open_prs or 0,
-                    'merged_prs': result.merged_prs or 0,
-                    'closed_prs': result.closed_prs or 0,
-                    'total_rework': result.total_rework or 0,
+                    'id': hierarchy.id if hierarchy else 0,
+                    'username': display_username,
+                    'github_login': github_user or '',
+                    'email': email or '',
+                    'total_prs': total_prs,
+                    'open_prs': open_prs,
+                    'merged_prs': merged_prs,
+                    'closed_prs': closed_prs,
+                    'total_rework': total_rework,
                     'last_updated': datetime.now(timezone.utc),
                     'metrics': {
-                        'avg_rework': round(result.avg_rework or 0, 2),
-                        'merge_rate': round(merge_rate, 2),
+                        'avg_rework': round(avg_rework, 2),
+                        'merge_rate': merge_rate,
                         'domains': dev_domains
                     }
                 })
             
+            # Sort the data
+            reverse_order = (sort_order.lower() == "desc")
+            if sort_by == "total_prs":
+                developers_data = sorted(developers_data, key=lambda x: x['total_prs'], reverse=reverse_order)
+            elif sort_by == "open_prs":
+                developers_data = sorted(developers_data, key=lambda x: x['open_prs'], reverse=reverse_order)
+            elif sort_by == "merged_prs":
+                developers_data = sorted(developers_data, key=lambda x: x['merged_prs'], reverse=reverse_order)
+            elif sort_by == "closed_prs":
+                developers_data = sorted(developers_data, key=lambda x: x['closed_prs'], reverse=reverse_order)
+            elif sort_by == "total_rework":
+                developers_data = sorted(developers_data, key=lambda x: x['total_rework'], reverse=reverse_order)
+            elif sort_by == "avg_rework":
+                developers_data = sorted(developers_data, key=lambda x: x['metrics']['avg_rework'], reverse=reverse_order)
+            
+            total = len(developers_data)
+            
+            # Apply pagination
+            paginated_data = developers_data[offset:offset + limit]
+            
             return PaginatedDevelopers(
-                data=developers_data,
+                data=paginated_data,
                 total=total,
                 limit=limit,
                 offset=offset
             )
         
-        # No domain filter - return global stats from Developer table with enriched metrics
-        query = db.query(Developer)
+        # No domain filter - show ALL users: trainers from sheet + anyone with PRs
+        from sqlalchemy import or_, func, case
+        from datetime import datetime, timezone
         
-        # Apply search filter (by username or email)
-        if search:
-            # Find github users with matching email
-            matching_users = db.query(DeveloperHierarchy.github_user).filter(
-                DeveloperHierarchy.turing_email.ilike(f'%{search}%')
-            ).all()
-            github_usernames = [user[0] for user in matching_users] if matching_users else []
-            
-            # Filter by username or matching github usernames
-            from sqlalchemy import or_
-            conditions = [Developer.username.ilike(f"%{search}%")]
-            if github_usernames:
-                conditions.append(Developer.username.in_(github_usernames))
-            query = query.filter(or_(*conditions))
+        # Step 1: Get all unique usernames (UNION of sheet trainers and PR creators)
+        all_usernames = set()
+        username_to_hierarchy = {}  # Map username to DeveloperHierarchy record
         
-        # Get total count after filters
-        total = query.count()
+        # Get trainers from Google Sheets
+        trainer_query = db.query(DeveloperHierarchy).filter(
+            DeveloperHierarchy.role == 'Trainer'
+        )
+        all_trainers = trainer_query.all()
         
-        # Apply sorting with order direction
-        from sqlalchemy import desc, asc, Float
-        order_func = desc if sort_order.lower() == "desc" else asc
-        
-        if sort_by == "total_prs":
-            query = query.order_by(order_func(Developer.total_prs))
-        elif sort_by == "open_prs":
-            query = query.order_by(order_func(Developer.open_prs))
-        elif sort_by == "merged_prs":
-            query = query.order_by(order_func(Developer.merged_prs))
-        elif sort_by == "closed_prs":
-            query = query.order_by(order_func(Developer.closed_prs))
-        elif sort_by == "total_rework":
-            query = query.order_by(order_func(Developer.total_rework))
-        elif sort_by == "avg_rework":
-            # Calculate avg_rework as total_rework / total_prs
-            # Use NULLIF to avoid division by zero
-            from sqlalchemy import text
-            if sort_order.lower() == "desc":
-                query = query.order_by(text("(CAST(developers.total_rework AS FLOAT) / NULLIF(developers.total_prs, 0)) DESC NULLS LAST"))
+        for trainer in all_trainers:
+            if trainer.github_user:
+                all_usernames.add(trainer.github_user)
+                username_to_hierarchy[trainer.github_user] = trainer
             else:
-                query = query.order_by(text("(CAST(developers.total_rework AS FLOAT) / NULLIF(developers.total_prs, 0)) ASC NULLS LAST"))
+                # For trainers without GitHub user, use email as unique identifier
+                email_key = f"__EMAIL__{trainer.turing_email}"
+                all_usernames.add(email_key)
+                username_to_hierarchy[email_key] = trainer
+        
+        # Get all users who have created PRs (even if not in sheet)
+        pr_creators = db.query(PullRequest.developer_username).distinct().all()
+        for (username,) in pr_creators:
+            if username:
+                all_usernames.add(username)
+                # If not already in hierarchy, add placeholder
+                if username not in username_to_hierarchy:
+                    username_to_hierarchy[username] = None
+        
+        # Step 2: Apply search filter on combined list
+        if search:
+            filtered_usernames = set()
+            for username in all_usernames:
+                # Check if username matches search
+                if username.startswith("__EMAIL__"):
+                    email = username.replace("__EMAIL__", "")
+                    if search.lower() in email.lower():
+                        filtered_usernames.add(username)
+                else:
+                    if search.lower() in username.lower():
+                        filtered_usernames.add(username)
+                    # Also check email from hierarchy
+                    hierarchy = username_to_hierarchy.get(username)
+                    if hierarchy and hierarchy.turing_email and search.lower() in hierarchy.turing_email.lower():
+                        filtered_usernames.add(username)
+            all_usernames = filtered_usernames
+        
+        # Step 3: Build developer data with PR stats
+        developers_data = []
+        for username_key in all_usernames:
+            hierarchy = username_to_hierarchy.get(username_key)
+            
+            # Handle email-only users
+            if username_key.startswith("__EMAIL__"):
+                github_user = None
+                email = username_key.replace("__EMAIL__", "")
+                display_username = email.split('@')[0]
+            else:
+                github_user = username_key
+                email = hierarchy.turing_email if hierarchy else None
+                display_username = github_user
+            
+            # Get PR stats for this user
+            if github_user:
+                pr_stats = db.query(
+                    func.count(PullRequest.id).label('total_prs'),
+                    func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
+                    func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                    func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
+                    func.sum(PullRequest.rework_count).label('total_rework')
+                ).filter(
+                    PullRequest.developer_username == github_user
+                ).first()
+                
+                total_prs = pr_stats.total_prs or 0
+                open_prs = pr_stats.open_prs or 0
+                merged_prs = pr_stats.merged_prs or 0
+                closed_prs = pr_stats.closed_prs or 0
+                total_rework = pr_stats.total_rework or 0
+                
+                # Get domains
+                if total_prs > 0:
+                    dev_domains_query = db.query(PullRequest.domain).filter(
+                        PullRequest.developer_username == github_user
+                    ).distinct()
+                    dev_domains = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+                else:
+                    dev_domains = []
+            else:
+                # No GitHub user - show zeros
+                total_prs = 0
+                open_prs = 0
+                merged_prs = 0
+                closed_prs = 0
+                total_rework = 0
+                dev_domains = []
+            
+            # Calculate metrics
+            avg_rework = round(total_rework / total_prs, 2) if total_prs > 0 else 0.0
+            merge_rate = round((merged_prs / total_prs) * 100, 2) if total_prs > 0 else 0.0
+            
+            developers_data.append({
+                'id': hierarchy.id if hierarchy else 0,
+                'username': display_username,
+                'github_login': github_user or '',
+                'email': email or '',
+                'total_prs': total_prs,
+                'open_prs': open_prs,
+                'merged_prs': merged_prs,
+                'closed_prs': closed_prs,
+                'total_rework': total_rework,
+                'last_updated': datetime.now(timezone.utc),
+                'metrics': {
+                    'avg_rework': avg_rework,
+                    'merge_rate': merge_rate,
+                    'domains': dev_domains
+                }
+            })
+        
+        # Sort the data
+        reverse_order = (sort_order.lower() == "desc")
+        if sort_by == "total_prs":
+            developers_data = sorted(developers_data, key=lambda x: x['total_prs'], reverse=reverse_order)
+        elif sort_by == "open_prs":
+            developers_data = sorted(developers_data, key=lambda x: x['open_prs'], reverse=reverse_order)
+        elif sort_by == "merged_prs":
+            developers_data = sorted(developers_data, key=lambda x: x['merged_prs'], reverse=reverse_order)
+        elif sort_by == "closed_prs":
+            developers_data = sorted(developers_data, key=lambda x: x['closed_prs'], reverse=reverse_order)
+        elif sort_by == "total_rework":
+            developers_data = sorted(developers_data, key=lambda x: x['total_rework'], reverse=reverse_order)
+        elif sort_by == "avg_rework":
+            developers_data = sorted(developers_data, key=lambda x: x['metrics']['avg_rework'], reverse=reverse_order)
+        
+        total = len(developers_data)
         
         # Apply pagination
-        developers = query.offset(offset).limit(limit).all()
-        
-        # Enrich developer data with domains
-        enriched_developers = []
-        for developer in developers:
-            # Fetch email from DeveloperHierarchy table
-            hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=developer.github_login).first()
-            email = hierarchy.turing_email if hierarchy else None
-            
-            developer_dict = {
-                'id': developer.id,
-                'username': developer.username,
-                'github_login': developer.github_login,
-                'email': email,
-                'total_prs': developer.total_prs,
-                'open_prs': developer.open_prs,
-                'merged_prs': developer.merged_prs,
-                'closed_prs': developer.closed_prs,
-                'total_rework': developer.total_rework,
-                'last_updated': developer.last_updated,
-                'metrics': developer.metrics or {}
-            }
-            
-            # Add domains this developer has worked on
-            dev_domains_query = db.query(PullRequest.domain).filter(
-                PullRequest.developer_username == developer.username
-            ).distinct()
-            developer_dict['metrics']['domains'] = [d[0] for d in dev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
-            
-            # Calculate avg_rework (total_rework / total_prs)
-            developer_dict['metrics']['avg_rework'] = round(developer.total_rework / developer.total_prs, 2) if developer.total_prs > 0 else 0.0
-            
-            enriched_developers.append(developer_dict)
+        paginated_data = developers_data[offset:offset + limit]
         
         return PaginatedDevelopers(
-            data=enriched_developers,
+            data=paginated_data,
             total=total,
             limit=limit,
             offset=offset
@@ -723,237 +839,340 @@ def get_reviewer_metrics(
         pending_results = db.execute(text(pending_query_sql)).fetchall()
         pending_reviews_map = {row[0]: row[1] for row in pending_results}
         
-        # If domain filter is applied, calculate stats from Reviews in that domain only
+        # If domain filter is applied, show ALL reviewers but with stats from that domain only
         if domain:
-            from sqlalchemy import case
+            from sqlalchemy import case, or_
+            from datetime import datetime, timezone
             
-            # Build base query with domain filter (join Review with PullRequest)
-            review_query = db.query(
-                Review.reviewer_login.label('username'),
-                func.count(Review.id).label('total_reviews'),
-                func.sum(case((Review.state == 'APPROVED', 1), else_=0)).label('approved_reviews'),
-                func.sum(case((Review.state == 'CHANGES_REQUESTED', 1), else_=0)).label('changes_requested'),
-                func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented_reviews'),
-                func.sum(case((Review.state == 'DISMISSED', 1), else_=0)).label('dismissed_reviews')
-            ).join(
+            # Step 1: Get all unique usernames (UNION of sheet reviewers and actual reviewers in this domain)
+            all_usernames = set()
+            username_to_hierarchy = {}
+            
+            # Get reviewers from Google Sheets (Pod Lead, Calibrator, Team Leader)
+            all_reviewers = db.query(DeveloperHierarchy).filter(
+                DeveloperHierarchy.role.in_(['Pod Lead', 'Calibrator', 'Team Leader'])
+            ).all()
+            
+            for reviewer in all_reviewers:
+                if reviewer.github_user:
+                    all_usernames.add(reviewer.github_user)
+                    username_to_hierarchy[reviewer.github_user] = reviewer
+                else:
+                    email_key = f"__EMAIL__{reviewer.turing_email}"
+                    all_usernames.add(email_key)
+                    username_to_hierarchy[email_key] = reviewer
+            
+            # Get all users who have done reviews in this domain (even if not in sheet)
+            reviewers_in_domain = db.query(Review.reviewer_login).join(
                 PullRequest, Review.pull_request_id == PullRequest.id
             ).filter(
                 PullRequest.domain == domain
-            ).group_by(Review.reviewer_login)
+            ).distinct().all()
+            for (username,) in reviewers_in_domain:
+                if username:
+                    all_usernames.add(username)
+                    if username not in username_to_hierarchy:
+                        username_to_hierarchy[username] = None
             
-            # Apply search filter (by username or email)
+            # Step 2: Apply search filter
             if search:
-                # Find github users with matching email
-                matching_users = db.query(DeveloperHierarchy.github_user).filter(
-                    DeveloperHierarchy.turing_email.ilike(f'%{search}%')
-                ).all()
-                github_usernames = [user[0] for user in matching_users] if matching_users else []
-                
-                # Filter by username or matching github usernames
-                from sqlalchemy import or_
-                conditions = [Review.reviewer_login.ilike(f"%{search}%")]
-                if github_usernames:
-                    conditions.append(Review.reviewer_login.in_(github_usernames))
-                review_query = review_query.filter(or_(*conditions))
+                filtered_usernames = set()
+                for username in all_usernames:
+                    if username.startswith("__EMAIL__"):
+                        email = username.replace("__EMAIL__", "")
+                        if search.lower() in email.lower():
+                            filtered_usernames.add(username)
+                    else:
+                        if search.lower() in username.lower():
+                            filtered_usernames.add(username)
+                        hierarchy = username_to_hierarchy.get(username)
+                        if hierarchy and hierarchy.turing_email and search.lower() in hierarchy.turing_email.lower():
+                            filtered_usernames.add(username)
+                all_usernames = filtered_usernames
             
-            # Get all results for sorting and pagination
-            results = review_query.all()
-            
-            # Sort results (reverse=True for desc, reverse=False for asc)
-            reverse_order = (sort_order.lower() == "desc")
-            
-            if sort_by == "total_reviews":
-                results = sorted(results, key=lambda x: x.total_reviews or 0, reverse=reverse_order)
-            elif sort_by == "approved_reviews":
-                results = sorted(results, key=lambda x: x.approved_reviews or 0, reverse=reverse_order)
-            elif sort_by == "changes_requested":
-                results = sorted(results, key=lambda x: x.changes_requested or 0, reverse=reverse_order)
-            elif sort_by == "approval_rate":
-                # Calculate approval rate for sorting: (approved / total) * 100
-                results = sorted(results, key=lambda x: (x.approved_reviews / x.total_reviews * 100) if x.total_reviews > 0 else 0, reverse=reverse_order)
-            elif sort_by == "pending_reviews":
-                # Sort by pending reviews using pre-calculated map
-                results = sorted(results, key=lambda x: pending_reviews_map.get(x.username, 0), reverse=reverse_order)
-            
-            total = len(results)
-            
-            # Apply pagination
-            paginated_results = results[offset:offset + limit]
-            
-            # Build response with domain-specific stats and domain list
-            from datetime import datetime, timezone
+            # Step 3: Build reviewer data with domain-specific review stats
             reviewers_data = []
-            for result in paginated_results:
-                # Get domains this reviewer has worked on (for display)
-                rev_domains_query = db.query(PullRequest.domain).join(
-                    Review, Review.pull_request_id == PullRequest.id
-                ).filter(
-                    Review.reviewer_login == result.username
-                ).distinct()
-                rev_domains = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+            for username_key in all_usernames:
+                hierarchy = username_to_hierarchy.get(username_key)
                 
-                # Fetch email and role from DeveloperHierarchy table
-                hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=result.username).first()
-                email = hierarchy.turing_email if hierarchy else None
-                role = hierarchy.role if hierarchy else None
+                if username_key.startswith("__EMAIL__"):
+                    github_user = None
+                    email = username_key.replace("__EMAIL__", "")
+                    display_username = email.split('@')[0]
+                    role = hierarchy.role if hierarchy else None
+                else:
+                    github_user = username_key
+                    email = hierarchy.turing_email if hierarchy else None
+                    display_username = github_user
+                    role = hierarchy.role if hierarchy else None
                 
-                # Calculate approval rate for this domain only
-                approval_rate = (result.approved_reviews / result.total_reviews * 100) if result.total_reviews else 0
+                # Get review stats for this reviewer in this domain (or zeros if no reviews)
+                if github_user:
+                    review_stats = db.query(
+                        func.count(Review.id).label('total_reviews'),
+                        func.sum(case((Review.state == 'APPROVED', 1), else_=0)).label('approved_reviews'),
+                        func.sum(case((Review.state == 'CHANGES_REQUESTED', 1), else_=0)).label('changes_requested'),
+                        func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented_reviews'),
+                        func.sum(case((Review.state == 'DISMISSED', 1), else_=0)).label('dismissed_reviews')
+                    ).join(
+                        PullRequest, Review.pull_request_id == PullRequest.id
+                    ).filter(
+                        Review.reviewer_login == github_user,
+                        PullRequest.domain == domain
+                    ).first()
+                    
+                    total_reviews = review_stats.total_reviews or 0
+                    approved_reviews = review_stats.approved_reviews or 0
+                    changes_requested = review_stats.changes_requested or 0
+                    commented_reviews = review_stats.commented_reviews or 0
+                    dismissed_reviews = review_stats.dismissed_reviews or 0
+                    
+                    # Get ALL domains this reviewer has worked on (for context)
+                    if total_reviews > 0:
+                        rev_domains_query = db.query(PullRequest.domain).join(
+                            Review, Review.pull_request_id == PullRequest.id
+                        ).filter(
+                            Review.reviewer_login == github_user
+                        ).distinct()
+                        rev_domains = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+                        
+                        # Get recent reviews in this domain
+                        recent_reviews = db.query(Review).join(
+                            PullRequest, Review.pull_request_id == PullRequest.id
+                        ).filter(
+                            Review.reviewer_login == github_user,
+                            PullRequest.domain == domain
+                        ).order_by(Review.submitted_at.desc()).limit(5).all()
+                        
+                        recent_reviews_list = [
+                            {
+                                'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
+                                'state': review.state,
+                                'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
+                            }
+                            for review in recent_reviews
+                        ]
+                    else:
+                        rev_domains = []
+                        recent_reviews_list = []
+                else:
+                    # Reviewer has no GitHub user - show zeros
+                    total_reviews = 0
+                    approved_reviews = 0
+                    changes_requested = 0
+                    commented_reviews = 0
+                    dismissed_reviews = 0
+                    rev_domains = []
+                    recent_reviews_list = []
                 
-                # Get pending reviews from pre-calculated map
-                pending_reviews_count = pending_reviews_map.get(result.username, 0)
-                
-                # Get recent reviews in this domain
-                recent_reviews = db.query(Review).join(
-                    PullRequest, Review.pull_request_id == PullRequest.id
-                ).filter(
-                    Review.reviewer_login == result.username,
-                    PullRequest.domain == domain
-                ).order_by(Review.submitted_at.desc()).limit(5).all()
-                
-                recent_reviews_list = [
-                    {
-                        'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
-                        'state': review.state,
-                        'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
-                    }
-                    for review in recent_reviews
-                ]
+                # Calculate metrics
+                approval_rate = round((approved_reviews / total_reviews) * 100, 2) if total_reviews > 0 else 0.0
+                pending_reviews_count = pending_reviews_map.get(github_user, 0) if github_user else 0
                 
                 reviewers_data.append({
-                    'id': 0,  # Placeholder ID for domain-filtered view
-                    'username': result.username,
-                    'email': email,
+                    'id': hierarchy.id if hierarchy else 0,
+                    'username': display_username,
+                    'email': email or '',
                     'role': role,
-                    'total_reviews': result.total_reviews or 0,
-                    'approved_reviews': result.approved_reviews or 0,
-                    'changes_requested': result.changes_requested or 0,
-                    'commented_reviews': result.commented_reviews or 0,
-                    'dismissed_reviews': result.dismissed_reviews or 0,
+                    'total_reviews': total_reviews,
+                    'approved_reviews': approved_reviews,
+                    'changes_requested': changes_requested,
+                    'commented_reviews': commented_reviews,
+                    'dismissed_reviews': dismissed_reviews,
                     'last_updated': datetime.now(timezone.utc),
                     'metrics': {
-                        'approval_rate': round(approval_rate, 2),
+                        'approval_rate': approval_rate,
                         'pending_reviews': pending_reviews_count,
                         'domains': rev_domains,
                         'recent_reviews': recent_reviews_list
                     }
                 })
             
+            # Sort the data
+            reverse_order = (sort_order.lower() == "desc")
+            if sort_by == "total_reviews":
+                reviewers_data = sorted(reviewers_data, key=lambda x: x['total_reviews'], reverse=reverse_order)
+            elif sort_by == "approved_reviews":
+                reviewers_data = sorted(reviewers_data, key=lambda x: x['approved_reviews'], reverse=reverse_order)
+            elif sort_by == "changes_requested":
+                reviewers_data = sorted(reviewers_data, key=lambda x: x['changes_requested'], reverse=reverse_order)
+            elif sort_by == "approval_rate":
+                reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['approval_rate'], reverse=reverse_order)
+            elif sort_by == "pending_reviews":
+                reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['pending_reviews'], reverse=reverse_order)
+            
+            total = len(reviewers_data)
+            
+            # Apply pagination
+            paginated_data = reviewers_data[offset:offset + limit]
+            
             return PaginatedReviewers(
-                data=reviewers_data,
+                data=paginated_data,
                 total=total,
                 limit=limit,
                 offset=offset
             )
         
-        # No domain filter - return global stats from Reviewer table with enriched metrics
-        query = db.query(Reviewer)
+        # No domain filter - show ALL users: reviewers from sheet + anyone who has done reviews
+        from sqlalchemy import or_, func, case
+        from datetime import datetime, timezone
         
-        # Apply search filter (by username or email)
-        if search:
-            # Find github users with matching email
-            matching_users = db.query(DeveloperHierarchy.github_user).filter(
-                DeveloperHierarchy.turing_email.ilike(f'%{search}%')
-            ).all()
-            github_usernames = [user[0] for user in matching_users] if matching_users else []
-            
-            # Filter by username or matching github usernames
-            from sqlalchemy import or_
-            conditions = [Reviewer.username.ilike(f"%{search}%")]
-            if github_usernames:
-                conditions.append(Reviewer.username.in_(github_usernames))
-            query = query.filter(or_(*conditions))
+        # Step 1: Get all unique usernames (UNION of sheet reviewers and actual reviewers)
+        all_usernames = set()
+        username_to_hierarchy = {}
         
-        # Get total count after filters
-        total = query.count()
+        # Get reviewers from Google Sheets (Pod Lead, Calibrator, Team Leader)
+        all_reviewers = db.query(DeveloperHierarchy).filter(
+            DeveloperHierarchy.role.in_(['Pod Lead', 'Calibrator', 'Team Leader'])
+        ).all()
         
-        # Apply sorting with order direction
-        from sqlalchemy import desc, asc, text
-        order_func = desc if sort_order.lower() == "desc" else asc
-        
-        if sort_by == "total_reviews":
-            query = query.order_by(order_func(Reviewer.total_reviews))
-        elif sort_by == "approved_reviews":
-            query = query.order_by(order_func(Reviewer.approved_reviews))
-        elif sort_by == "changes_requested":
-            query = query.order_by(order_func(Reviewer.changes_requested))
-        elif sort_by == "approval_rate":
-            # Calculate approval rate: (approved_reviews / total_reviews) * 100
-            # Use NULLIF to avoid division by zero
-            if sort_order.lower() == "desc":
-                query = query.order_by(text("(CAST(reviewers.approved_reviews AS FLOAT) / NULLIF(reviewers.total_reviews, 0) * 100) DESC NULLS LAST"))
+        for reviewer in all_reviewers:
+            if reviewer.github_user:
+                all_usernames.add(reviewer.github_user)
+                username_to_hierarchy[reviewer.github_user] = reviewer
             else:
-                query = query.order_by(text("(CAST(reviewers.approved_reviews AS FLOAT) / NULLIF(reviewers.total_reviews, 0) * 100) ASC NULLS LAST"))
+                email_key = f"__EMAIL__{reviewer.turing_email}"
+                all_usernames.add(email_key)
+                username_to_hierarchy[email_key] = reviewer
         
-        # Handle pagination based on sort type
-        if sort_by == "pending_reviews":
-            # Sort by pending reviews using pre-calculated map
-            all_reviewers = query.all()
-            reverse_order = (sort_order.lower() == "desc")
-            reviewers_with_pending = sorted(all_reviewers, key=lambda x: pending_reviews_map.get(x.username, 0), reverse=reverse_order)
-            
-            # Apply pagination on sorted results
-            reviewers = reviewers_with_pending[offset:offset + limit]
-        else:
-            # Apply pagination for other sort types
-            reviewers = query.offset(offset).limit(limit).all()
+        # Get all users who have done reviews (even if not in sheet)
+        reviewers_all = db.query(Review.reviewer_login).distinct().all()
+        for (username,) in reviewers_all:
+            if username:
+                all_usernames.add(username)
+                if username not in username_to_hierarchy:
+                    username_to_hierarchy[username] = None
         
-        # Enrich reviewer data with domains and recent reviews
-        enriched_reviewers = []
-        for reviewer in reviewers:
-            # Fetch email and role from DeveloperHierarchy table
-            hierarchy = db.query(DeveloperHierarchy).filter_by(github_user=reviewer.username).first()
-            email = hierarchy.turing_email if hierarchy else None
-            role = hierarchy.role if hierarchy else None
+        # Step 2: Apply search filter
+        if search:
+            filtered_usernames = set()
+            for username in all_usernames:
+                if username.startswith("__EMAIL__"):
+                    email = username.replace("__EMAIL__", "")
+                    if search.lower() in email.lower():
+                        filtered_usernames.add(username)
+                else:
+                    if search.lower() in username.lower():
+                        filtered_usernames.add(username)
+                    hierarchy = username_to_hierarchy.get(username)
+                    if hierarchy and hierarchy.turing_email and search.lower() in hierarchy.turing_email.lower():
+                        filtered_usernames.add(username)
+            all_usernames = filtered_usernames
+        
+        # Step 3: Build reviewer data with review stats
+        reviewers_data = []
+        for username_key in all_usernames:
+            hierarchy = username_to_hierarchy.get(username_key)
             
-            reviewer_dict = {
-                'id': reviewer.id,
-                'username': reviewer.username,
-                'email': email,
+            if username_key.startswith("__EMAIL__"):
+                github_user = None
+                email = username_key.replace("__EMAIL__", "")
+                display_username = email.split('@')[0]
+                role = hierarchy.role if hierarchy else None
+            else:
+                github_user = username_key
+                email = hierarchy.turing_email if hierarchy else None
+                display_username = github_user
+                role = hierarchy.role if hierarchy else None
+            
+            # Get review stats for this reviewer (or zeros if no reviews)
+            if github_user:
+                review_stats = db.query(
+                    func.count(Review.id).label('total_reviews'),
+                    func.sum(case((Review.state == 'APPROVED', 1), else_=0)).label('approved_reviews'),
+                    func.sum(case((Review.state == 'CHANGES_REQUESTED', 1), else_=0)).label('changes_requested'),
+                    func.sum(case((Review.state == 'COMMENTED', 1), else_=0)).label('commented_reviews'),
+                    func.sum(case((Review.state == 'DISMISSED', 1), else_=0)).label('dismissed_reviews')
+                ).filter(
+                    Review.reviewer_login == github_user
+                ).first()
+                
+                total_reviews = review_stats.total_reviews or 0
+                approved_reviews = review_stats.approved_reviews or 0
+                changes_requested = review_stats.changes_requested or 0
+                commented_reviews = review_stats.commented_reviews or 0
+                dismissed_reviews = review_stats.dismissed_reviews or 0
+                
+                # Get domains this reviewer has worked on
+                if total_reviews > 0:
+                    rev_domains_query = db.query(PullRequest.domain).join(
+                        Review, Review.pull_request_id == PullRequest.id
+                    ).filter(
+                        Review.reviewer_login == github_user
+                    ).distinct()
+                    rev_domains = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
+                    
+                    # Get recent reviews
+                    recent_reviews = db.query(Review).join(
+                        PullRequest, Review.pull_request_id == PullRequest.id
+                    ).filter(
+                        Review.reviewer_login == github_user
+                    ).order_by(Review.submitted_at.desc()).limit(5).all()
+                    
+                    recent_reviews_list = [
+                        {
+                            'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
+                            'state': review.state,
+                            'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
+                        }
+                        for review in recent_reviews
+                    ]
+                else:
+                    rev_domains = []
+                    recent_reviews_list = []
+            else:
+                # Reviewer has no GitHub user - show zeros
+                total_reviews = 0
+                approved_reviews = 0
+                changes_requested = 0
+                commented_reviews = 0
+                dismissed_reviews = 0
+                rev_domains = []
+                recent_reviews_list = []
+            
+            # Calculate metrics
+            approval_rate = round((approved_reviews / total_reviews) * 100, 2) if total_reviews > 0 else 0.0
+            pending_reviews_count = pending_reviews_map.get(github_user, 0) if github_user else 0
+            
+            reviewers_data.append({
+                'id': hierarchy.id if hierarchy else 0,
+                'username': display_username,
+                'email': email or '',
                 'role': role,
-                'total_reviews': reviewer.total_reviews,
-                'approved_reviews': reviewer.approved_reviews,
-                'changes_requested': reviewer.changes_requested,
-                'commented_reviews': reviewer.commented_reviews,
-                'dismissed_reviews': reviewer.dismissed_reviews,
-                'last_updated': reviewer.last_updated,
-                'metrics': reviewer.metrics or {}
-            }
-            
-            # Add domains this reviewer has worked on
-            rev_domains_query = db.query(PullRequest.domain).join(
-                Review, Review.pull_request_id == PullRequest.id
-            ).filter(
-                Review.reviewer_login == reviewer.username
-            ).distinct()
-            reviewer_dict['metrics']['domains'] = [d[0] for d in rev_domains_query.all() if d[0] and d[0] in settings.allowed_domains]
-            
-            # Calculate approval rate (approved / total * 100)
-            reviewer_dict['metrics']['approval_rate'] = round((reviewer.approved_reviews / reviewer.total_reviews * 100), 2) if reviewer.total_reviews > 0 else 0.0
-            
-            # Get pending reviews from pre-calculated map
-            reviewer_dict['metrics']['pending_reviews'] = pending_reviews_map.get(reviewer.username, 0)
-            
-            # Add recent reviews
-            recent_reviews = db.query(Review).join(
-                PullRequest, Review.pull_request_id == PullRequest.id
-            ).filter(
-                Review.reviewer_login == reviewer.username
-            ).order_by(Review.submitted_at.desc()).limit(5).all()
-            
-            reviewer_dict['metrics']['recent_reviews'] = [
-                {
-                    'pr_title': db.query(PullRequest).filter_by(id=review.pull_request_id).first().title if db.query(PullRequest).filter_by(id=review.pull_request_id).first() else 'N/A',
-                    'state': review.state,
-                    'submitted_at': review.submitted_at.isoformat() if review.submitted_at else None
+                'total_reviews': total_reviews,
+                'approved_reviews': approved_reviews,
+                'changes_requested': changes_requested,
+                'commented_reviews': commented_reviews,
+                'dismissed_reviews': dismissed_reviews,
+                'last_updated': datetime.now(timezone.utc),
+                'metrics': {
+                    'approval_rate': approval_rate,
+                    'pending_reviews': pending_reviews_count,
+                    'domains': rev_domains,
+                    'recent_reviews': recent_reviews_list
                 }
-                for review in recent_reviews
-            ]
-            
-            enriched_reviewers.append(reviewer_dict)
+            })
+        
+        # Sort the data
+        reverse_order = (sort_order.lower() == "desc")
+        if sort_by == "total_reviews":
+            reviewers_data = sorted(reviewers_data, key=lambda x: x['total_reviews'], reverse=reverse_order)
+        elif sort_by == "approved_reviews":
+            reviewers_data = sorted(reviewers_data, key=lambda x: x['approved_reviews'], reverse=reverse_order)
+        elif sort_by == "changes_requested":
+            reviewers_data = sorted(reviewers_data, key=lambda x: x['changes_requested'], reverse=reverse_order)
+        elif sort_by == "approval_rate":
+            reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['approval_rate'], reverse=reverse_order)
+        elif sort_by == "pending_reviews":
+            reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['pending_reviews'], reverse=reverse_order)
+        
+        total = len(reviewers_data)
+        
+        # Apply pagination
+        paginated_data = reviewers_data[offset:offset + limit]
         
         return PaginatedReviewers(
-            data=enriched_reviewers,
+            data=paginated_data,
             total=total,
             limit=limit,
             offset=offset

@@ -47,7 +47,7 @@ const TaskSimilarityView = ({ lastUpdate }) => {
   });
 
   // Sorting
-  const [sortBy, setSortBy] = useState('avg_similarity');
+  const [sortBy, setSortBy] = useState('most_similar');
   const [sortOrder, setSortOrder] = useState('desc');
 
   // Pagination
@@ -130,12 +130,20 @@ const TaskSimilarityView = ({ lastUpdate }) => {
 
   const sortTasks = (tasksData, field, order) => {
     return [...tasksData].sort((a, b) => {
-      let aVal = a[field];
-      let bVal = b[field];
+      let aVal, bVal;
       
-      // Handle null values
-      if (aVal === null) aVal = -1;
-      if (bVal === null) bVal = -1;
+      // Special handling for most_similar sorting (by similarity score)
+      if (field === 'most_similar') {
+        aVal = a.most_similar?.similarity ?? -1;
+        bVal = b.most_similar?.similarity ?? -1;
+      } else {
+        aVal = a[field];
+        bVal = b[field];
+        
+        // Handle null values
+        if (aVal === null) aVal = -1;
+        if (bVal === null) bVal = -1;
+      }
       
       if (order === 'asc') {
         return aVal > bVal ? 1 : -1;
@@ -159,15 +167,16 @@ const TaskSimilarityView = ({ lastUpdate }) => {
   };
 
   const exportToCSV = () => {
-    const headers = ['PR Number', 'Difficulty', 'Pass Count', 'Total Trials', 'Avg Similarity', 'Most Similar PR', 'Least Similar PR'];
+    const headers = ['PR Number', 'Difficulty', 'Pass Count', 'Total Trials', 'Most Similar PR', 'Most Similar Score', 'Least Similar PR', 'Least Similar Score'];
     const rows = tasks.map(task => [
       task.pr_number,
       task.difficulty || 'N/A',
       task.pass_count || 'N/A',
       task.total_trials || 'N/A',
-      task.avg_similarity ? task.avg_similarity.toFixed(3) : 'N/A',
       task.most_similar?.pr_number || 'N/A',
-      task.least_similar?.pr_number || 'N/A'
+      task.most_similar?.similarity ? task.most_similar.similarity.toFixed(3) : 'N/A',
+      task.least_similar?.pr_number || 'N/A',
+      task.least_similar?.similarity ? task.least_similar.similarity.toFixed(3) : 'N/A'
     ]);
 
     const csvContent = [
@@ -214,6 +223,16 @@ const TaskSimilarityView = ({ lastUpdate }) => {
     if (similarity >= 0.6) return 'text-blue-600 font-semibold';
     if (similarity >= 0.4) return 'text-yellow-600 font-semibold';
     return 'text-red-600 font-semibold';
+  };
+
+  // Color scheme for Most Similar column (text only, more emphasis than avg)
+  const getMostSimilarColor = (similarity) => {
+    if (similarity === null || similarity === undefined) return 'text-gray-400';
+    if (similarity >= 0.9) return 'text-red-600 font-bold text-base';  // Near duplicates - red & bold
+    if (similarity >= 0.8) return 'text-orange-600 font-bold';  // Very similar - orange & bold
+    if (similarity >= 0.7) return 'text-yellow-600 font-semibold';  // Related - yellow
+    if (similarity >= 0.5) return 'text-blue-600 font-semibold';  // Somewhat similar - blue
+    return 'text-green-600 font-semibold';  // Different - green
   };
 
   if (loading) {
@@ -384,23 +403,15 @@ const TaskSimilarityView = ({ lastUpdate }) => {
       </div>
 
       {/* Summary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="card">
           <p className="text-sm font-medium text-gray-600">Total Tasks</p>
           <p className="text-3xl font-bold text-gray-900">{tasks.length}</p>
         </div>
         <div className="card">
-          <p className="text-sm font-medium text-gray-600">Avg Similarity</p>
+          <p className="text-sm font-medium text-gray-600">With Similarity Data</p>
           <p className="text-3xl font-bold text-purple-600">
-            {tasks.length > 0 
-              ? (tasks.reduce((sum, t) => sum + (t.avg_similarity || 0), 0) / tasks.length).toFixed(3)
-              : 'N/A'}
-          </p>
-        </div>
-        <div className="card">
-          <p className="text-sm font-medium text-gray-600">With Data</p>
-          <p className="text-3xl font-bold text-green-600">
-            {tasks.filter(t => t.avg_similarity !== null).length}
+            {tasks.filter(t => t.most_similar !== null).length}
           </p>
         </div>
         <div className="card">
@@ -455,18 +466,10 @@ const TaskSimilarityView = ({ lastUpdate }) => {
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
                   <div className="flex items-center gap-1">
-                    <button onClick={() => handleSort('avg_similarity')} className="flex items-center hover:text-gray-700">
-                      Avg Similarity <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                    <button onClick={() => handleSort('most_similar')} className="flex items-center hover:text-gray-700">
+                      Most Similar <ChevronUpDownIcon className="h-4 w-4 ml-1" />
                     </button>
-                    <Tooltip text="Average cosine similarity (0-1) with all other tasks in this domain. Higher = more similar to other tasks. 0.7+ means highly related tasks.">
-                      <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
-                    </Tooltip>
-                  </div>
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
-                  <div className="flex items-center gap-1">
-                    Most Similar
-                    <Tooltip text="The task with the highest similarity score to this one. Useful for finding duplicate or near-duplicate tasks.">
+                    <Tooltip text="The task with the highest similarity score to this one. Scores are color-coded: red (0.9+) for near duplicates, orange (0.8+) for very similar tasks, yellow (0.7+) for related tasks, blue (0.5+) for somewhat similar, green (<0.5) for different tasks.">
                       <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
                     </Tooltip>
                   </div>
@@ -487,7 +490,7 @@ const TaskSimilarityView = ({ lastUpdate }) => {
             <tbody className="bg-white divide-y divide-gray-200">
               {tasks.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="px-6 py-12 text-center text-gray-500">
+                  <td colSpan="7" className="px-6 py-12 text-center text-gray-500">
                     No tasks found matching the selected filters.
                   </td>
                 </tr>
@@ -525,11 +528,6 @@ const TaskSimilarityView = ({ lastUpdate }) => {
                           </span>
                         ) : 'N/A'}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`text-sm ${getSimilarityColor(task.avg_similarity)}`}>
-                          {task.avg_similarity !== null ? task.avg_similarity.toFixed(3) : 'N/A'}
-                        </span>
-                      </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         {task.most_similar ? (
                           <div>
@@ -541,9 +539,11 @@ const TaskSimilarityView = ({ lastUpdate }) => {
                             >
                               #{task.most_similar.pr_number}
                             </a>
-                            <span className="text-xs text-gray-500 ml-1">
-                              ({task.most_similar.similarity.toFixed(3)})
+                            <span className="text-gray-500 ml-1">(</span>
+                            <span className={getMostSimilarColor(task.most_similar.similarity)}>
+                              {task.most_similar.similarity.toFixed(3)}
                             </span>
+                            <span className="text-gray-500">)</span>
                           </div>
                         ) : 'N/A'}
                       </td>
@@ -576,7 +576,7 @@ const TaskSimilarityView = ({ lastUpdate }) => {
                     </tr>
                     {expandedRow === task.pr_number && (
                       <tr>
-                        <td colSpan="8" className="px-6 py-4 bg-gray-50">
+                        <td colSpan="7" className="px-6 py-4 bg-gray-50">
                           <div className="space-y-3">
                             <div>
                               <h4 className="font-semibold text-gray-900 mb-2">Full Instruction:</h4>
