@@ -70,6 +70,25 @@ def _do_similarity_calculation():
         logger.error(f"Error in similarity calculation thread: {str(e)}")
         return 0
 
+def _do_revert_verification():
+    """Run revert verification in a separate thread to avoid blocking the event loop."""
+    try:
+        github_service = GitHubService()
+        db = SessionLocal()
+        
+        # Mark reverted PRs (folders that no longer exist on main)
+        reverted_count = github_service.mark_reverted_prs(db)
+        
+        # Mark initial submissions (first PR per folder)
+        initial_count = github_service.mark_initial_submissions(db)
+        
+        db.close()
+        logger.info(f"Revert verification complete: {reverted_count} reverted, {initial_count} initial submissions")
+        return {'reverted': reverted_count, 'initial': initial_count}
+    except Exception as e:
+        logger.error(f"Error in revert verification thread: {str(e)}")
+        return {'reverted': 0, 'initial': 0}
+
 async def start_background_sync(connection_manager):
     """Background task to periodically sync with GitHub."""
     try:
@@ -228,5 +247,40 @@ async def start_similarity_calculation():
     except asyncio.CancelledError:
         # Clean shutdown
         logger.info("Similarity calculation task stopped")
+        raise
+
+
+async def start_revert_verification():
+    """Background task to verify reverted PRs and mark initial submissions daily."""
+    try:
+        # Wait 2 hours before starting first verification to allow initial sync to complete
+        await asyncio.sleep(7200)  # 2 hours
+        
+        while True:
+            try:
+                logger.info("Starting revert verification (background)...")
+                
+                # Run the blocking revert verification in a thread pool
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(executor, _do_revert_verification)
+                
+                if result:
+                    logger.info(f"Revert verification complete - {result['reverted']} reverted, {result['initial']} initial submissions")
+                else:
+                    logger.info("Revert verification completed")
+                
+            except asyncio.CancelledError:
+                # Task was cancelled, exit gracefully
+                logger.info("Revert verification task cancelled, shutting down...")
+                raise
+            except Exception as e:
+                logger.error(f"Error in revert verification: {str(e)}")
+            
+            # Wait for 24 hours between verifications (daily check)
+            await asyncio.sleep(86400)  # 24 hours
+    
+    except asyncio.CancelledError:
+        # Clean shutdown
+        logger.info("Revert verification task stopped")
         raise
 

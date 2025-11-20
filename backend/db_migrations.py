@@ -873,6 +873,70 @@ def create_task_similarity_table():
         logger.error(f" Error creating task_similarities table: {e}")
         return False
 
+def add_pr_folder_tracking_columns():
+    """
+    Add folder tracking columns to pull_requests table for revert/rework detection.
+    These columns enable:
+    - task_folder_path: Full folder path on GitHub (week_XX_domain/pod/task_folder)
+    - is_reverted: Whether the task folder no longer exists on main branch
+    - revert_detected_at: When the revert was detected
+    - is_initial_submission: Whether this is the first PR for this task folder
+    """
+    try:
+        logger.info("Checking for folder tracking columns in pull_requests...")
+        
+        columns_to_add = [
+            ('task_folder_path', 'VARCHAR'),
+            ('is_reverted', 'BOOLEAN DEFAULT FALSE'),
+            ('revert_detected_at', 'TIMESTAMP'),
+            ('is_initial_submission', 'BOOLEAN DEFAULT FALSE')
+        ]
+        
+        with engine.connect() as connection:
+            for col_name, col_type in columns_to_add:
+                if not column_exists('pull_requests', col_name):
+                    logger.info(f"Adding {col_name} column to pull_requests...")
+                    connection.execute(text(f"""
+                        ALTER TABLE pull_requests 
+                        ADD COLUMN {col_name} {col_type}
+                    """))
+                    connection.commit()
+                    logger.info(f" Added {col_name} column")
+                else:
+                    logger.info(f" {col_name} column already exists")
+            
+            # Create indices for performance
+            if not index_exists('pull_requests', 'idx_pr_task_folder_path'):
+                logger.info("Creating index on task_folder_path...")
+                connection.execute(text(
+                    "CREATE INDEX idx_pr_task_folder_path ON pull_requests(task_folder_path)"
+                ))
+                connection.commit()
+                logger.info(" Created index on task_folder_path")
+            
+            if not index_exists('pull_requests', 'idx_pr_is_reverted'):
+                logger.info("Creating index on is_reverted...")
+                connection.execute(text(
+                    "CREATE INDEX idx_pr_is_reverted ON pull_requests(is_reverted)"
+                ))
+                connection.commit()
+                logger.info(" Created index on is_reverted")
+            
+            if not index_exists('pull_requests', 'idx_pr_is_initial_submission'):
+                logger.info("Creating index on is_initial_submission...")
+                connection.execute(text(
+                    "CREATE INDEX idx_pr_is_initial_submission ON pull_requests(is_initial_submission)"
+                ))
+                connection.commit()
+                logger.info(" Created index on is_initial_submission")
+        
+        logger.info(" Folder tracking columns ready")
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error adding folder tracking columns: {e}")
+        return False
+
 def run_migrations():
     """
     Run all database migrations
@@ -937,6 +1001,9 @@ def run_migrations():
     # Create task_embeddings and task_similarities tables
     create_task_embedding_table()
     create_task_similarity_table()
+    
+    # Add folder tracking columns for revert/rework detection
+    add_pr_folder_tracking_columns()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info(" DeveloperHierarchy table managed by SQLAlchemy ORM")

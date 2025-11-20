@@ -138,12 +138,13 @@ async def lifespan(app: FastAPI):
     three_day_sync_task = None
     similarity_task = None
     try:
-        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync, start_similarity_calculation
+        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync, start_similarity_calculation, start_revert_verification
         background_task = asyncio.create_task(start_background_sync(manager))
         domain_refresh_task = asyncio.create_task(start_domain_refresh())
         three_day_sync_task = asyncio.create_task(start_3_day_sync(manager))
         similarity_task = asyncio.create_task(start_similarity_calculation())
-        logger.info("Background sync, domain refresh, 3-day sync, and similarity calculation tasks started")
+        revert_verification_task = asyncio.create_task(start_revert_verification())
+        logger.info("Background sync, domain refresh, 3-day sync, similarity calculation, and revert verification tasks started")
     except ImportError as e:
         logger.warning(f"Background sync module not available: {str(e)}")
     except Exception as e:
@@ -430,7 +431,7 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
         
         total_prs = db.query(PullRequest).count()
         open_prs = db.query(PullRequest).filter_by(state='open').count()
-        merged_prs = db.query(PullRequest).filter_by(merged=True).count()
+        merged_prs = db.query(PullRequest).filter_by(merged=True, is_reverted=False).count()  # Exclude reverted PRs
         
         total_developers = db.query(Developer).count()
         total_reviewers = db.query(Reviewer).count()
@@ -551,10 +552,10 @@ def get_developer_metrics(
                     pr_stats = db.query(
                         func.count(PullRequest.id).label('total_prs'),
                         func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
-                        func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                        func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted == False), 1), else_=0)).label('merged_prs'),  # Exclude reverted
                         func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                         func.sum(PullRequest.rework_count).label('total_rework'),
-                        func.avg(case((PullRequest.merged == True, PullRequest.rework_count), else_=None)).label('avg_rework')
+                        func.avg(case(((PullRequest.merged == True) & (PullRequest.is_reverted == False), PullRequest.rework_count), else_=None)).label('avg_rework')  # Exclude reverted
                     ).filter(
                         PullRequest.developer_username == github_user,
                         PullRequest.domain == domain
@@ -704,7 +705,7 @@ def get_developer_metrics(
                 pr_stats = db.query(
                     func.count(PullRequest.id).label('total_prs'),
                     func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
-                    func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                    func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted == False), 1), else_=0)).label('merged_prs'),  # Exclude reverted
                     func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                     func.sum(PullRequest.rework_count).label('total_rework')
                 ).filter(
@@ -2790,10 +2791,11 @@ async def get_task_similarity(
         from database import TaskSimilarity
         import numpy as np
         
-        # Base query for merged PRs with instructions
+        # Base query for merged PRs with instructions (exclude reverted PRs)
         query = db.query(PullRequest).filter(
             PullRequest.domain == domain,
             PullRequest.merged == True,
+            PullRequest.is_reverted == False,  # Exclude reverted PRs
             PullRequest.instruction_text != None,
             PullRequest.instruction_text != ''
         )
@@ -2885,14 +2887,28 @@ async def get_task_similarity(
                 
                 most_similar = {
                     "pr_number": max_pr.number if max_pr else None,
+                    "pr_title": max_pr.title if max_pr else None,
                     "similarity": float(max_score),
-                    "instruction": max_pr.instruction_text[:100] + "..." if max_pr and max_pr.instruction_text else None
+                    "instruction": max_pr.instruction_text if max_pr else None,
+                    "instruction_preview": max_pr.instruction_text[:100] + "..." if max_pr and max_pr.instruction_text else None,
+                    "task_folder_path": max_pr.task_folder_path if max_pr else None,
+                    "difficulty": max_pr.actual_difficulty if max_pr else None,
+                    "trainer_name": max_pr.trainer_name if max_pr else None,
+                    "week_num": max_pr.week_num if max_pr else None,
+                    "interface_num": max_pr.interface_num if max_pr else None
                 } if max_pr else None
                 
                 least_similar = {
                     "pr_number": min_pr.number if min_pr else None,
+                    "pr_title": min_pr.title if min_pr else None,
                     "similarity": float(min_score),
-                    "instruction": min_pr.instruction_text[:100] + "..." if min_pr and min_pr.instruction_text else None
+                    "instruction": min_pr.instruction_text if min_pr else None,
+                    "instruction_preview": min_pr.instruction_text[:100] + "..." if min_pr and min_pr.instruction_text else None,
+                    "task_folder_path": min_pr.task_folder_path if min_pr else None,
+                    "difficulty": min_pr.actual_difficulty if min_pr else None,
+                    "trainer_name": min_pr.trainer_name if min_pr else None,
+                    "week_num": min_pr.week_num if min_pr else None,
+                    "interface_num": min_pr.interface_num if min_pr else None
                 } if min_pr else None
             else:
                 avg_sim = None
@@ -2902,6 +2918,7 @@ async def get_task_similarity(
             result.append({
                 "pr_number": task.number,
                 "pr_title": task.title,
+                "task_folder_path": task.task_folder_path,
                 "instruction": task.instruction_text,
                 "instruction_preview": task.instruction_text[:150] + "..." if task.instruction_text and len(task.instruction_text) > 150 else task.instruction_text,
                 "difficulty": task.actual_difficulty,

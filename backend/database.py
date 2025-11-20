@@ -81,6 +81,12 @@ class PullRequest(Base):
     result_data_missing = Column(Boolean, default=False)  # Flag if result.json missing
     task_folder = Column(String, nullable=True)  # Folder name for task files
     
+    # Folder tracking for reverts and rework detection
+    task_folder_path = Column(String, nullable=True, index=True)  # Full path: week_XX_domain/pod/task_folder
+    is_reverted = Column(Boolean, default=False, index=True)  # True if folder no longer exists on main
+    revert_detected_at = Column(DateTime, nullable=True)  # When revert was detected
+    is_initial_submission = Column(Boolean, default=False, index=True)  # True = first PR for this folder
+    
     # Timestamps
     last_synced = Column(DateTime, default=func.now())
     

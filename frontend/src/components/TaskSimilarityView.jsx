@@ -167,24 +167,73 @@ const TaskSimilarityView = ({ lastUpdate }) => {
   };
 
   const exportToCSV = () => {
-    const headers = ['PR Number', 'Difficulty', 'Pass Count', 'Total Trials', 'Most Similar PR', 'Most Similar Score', 'Least Similar PR', 'Least Similar Score'];
-    const rows = tasks.map(task => [
-      task.pr_number,
-      task.difficulty || 'N/A',
-      task.pass_count || 'N/A',
-      task.total_trials || 'N/A',
-      task.most_similar?.pr_number || 'N/A',
-      task.most_similar?.similarity ? task.most_similar.similarity.toFixed(3) : 'N/A',
-      task.least_similar?.pr_number || 'N/A',
-      task.least_similar?.similarity ? task.least_similar.similarity.toFixed(3) : 'N/A'
-    ]);
+    // Helper function to escape CSV values (handle commas, quotes, newlines)
+    const escapeCSV = (value) => {
+      if (value === null || value === undefined) return 'N/A';
+      const str = String(value);
+      // If contains comma, quote, or newline, wrap in quotes and escape existing quotes
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const headers = [
+      'PR Number',
+      'Task Title',
+      'Task Folder Path',
+      'Trainer',
+      'Week',
+      'Interface',
+      'Difficulty',
+      'Pass Count',
+      'Total Trials',
+      'Pass Rate %',
+      'Instruction (Preview)',
+      'Most Similar PR',
+      'Most Similar Title',
+      'Most Similar Folder',
+      'Most Similar Trainer',
+      'Most Similar Score',
+      'Most Similar Instruction (Preview)',
+      'Least Similar PR',
+      'Least Similar Score'
+    ];
+    
+    const rows = tasks.map(task => {
+      const passRate = task.total_trials > 0 
+        ? ((task.pass_count / task.total_trials) * 100).toFixed(1) 
+        : 'N/A';
+      
+      return [
+        task.pr_number || 'N/A',
+        escapeCSV(task.pr_title || 'N/A'),
+        escapeCSV(task.task_folder_path || 'N/A'),
+        escapeCSV(task.trainer_name || 'N/A'),
+        task.week_num || 'N/A',
+        task.interface_num || 'N/A',
+        task.difficulty || 'N/A',
+        task.pass_count || 'N/A',
+        task.total_trials || 'N/A',
+        passRate,
+        escapeCSV(task.instruction_preview || task.instruction?.substring(0, 150) || 'N/A'),
+        task.most_similar?.pr_number || 'N/A',
+        escapeCSV(task.most_similar?.pr_title || 'N/A'),
+        escapeCSV(task.most_similar?.task_folder_path || 'N/A'),
+        escapeCSV(task.most_similar?.trainer_name || 'N/A'),
+        task.most_similar?.similarity ? task.most_similar.similarity.toFixed(3) : 'N/A',
+        escapeCSV(task.most_similar?.instruction_preview || task.most_similar?.instruction?.substring(0, 150) || 'N/A'),
+        task.least_similar?.pr_number || 'N/A',
+        task.least_similar?.similarity ? task.least_similar.similarity.toFixed(3) : 'N/A'
+      ];
+    });
 
     const csvContent = [
       headers.join(','),
       ...rows.map(row => row.join(','))
     ].join('\n');
 
-    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
