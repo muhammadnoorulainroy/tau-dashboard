@@ -1234,13 +1234,17 @@ class GitHubService:
         return synced_count
     
     def sync_all_prs(self, db: Session, since_days: int = 60):
-        """Sync all PRs from the last N days."""
+        """
+        Sync all PRs from the last N days.
+        Syncs open, merged, and closed PRs.
+        """
         # Use timezone-aware datetime for comparison with GitHub API datetimes
         since = datetime.now(timezone.utc) - timedelta(days=since_days)
         synced_count = 0
         skipped_count = 0
         
         logger.info(f"Starting full sync for PRs since {since} ({since_days} days)")
+        logger.info("Fetching from newest to oldest...")
         
         # Sync open PRs (sorted by created date descending by default)
         logger.info("Syncing open PRs...")
@@ -1256,12 +1260,55 @@ class GitHubService:
             else:
                 skipped_count += 1
         
-        # Sync recently closed/merged PRs (sorted by updated date to catch recent activity)
-        logger.info("Syncing closed/merged PRs...")
+        # Sync MERGED PRs (sorted by updated date, newest first)
+        logger.info("Syncing merged PRs (newest to oldest)...")
+        logger.info(f"NOTE: Checking merged_at date (not updated_at) to catch all merged PRs")
+        
+        skipped_by_date = 0
+        checked_count = 0
+        
         for pr in self.repo.get_pulls(state='closed', sort='updated', direction='desc'):
-            # Check updated_at since we want recently active closed PRs
+            checked_count += 1
+            
+            # Check if it's actually merged (closed PRs include both merged and just closed)
+            if not pr.merged:
+                continue
+            
+            # IMPORTANT: Check merged_at (when PR was merged), not updated_at
+            # Some PRs are merged but don't get updated afterwards, so checking updated_at
+            # would miss them. We want all PRs merged within the time window.
+            if pr.merged_at and pr.merged_at < since:
+                # Skip PRs merged outside our time window
+                skipped_by_date += 1
+                # Don't break! PRs are sorted by updated_at, not merged_at
+                # An older-updated PR might have been merged more recently
+                continue
+            elif not pr.merged_at and pr.created_at < since:
+                # Fallback: if merged_at is not available, use created_at
+                skipped_by_date += 1
+                continue
+            
+            # Safety: If we've checked many PRs and are consistently skipping by date, break
+            if checked_count > 100 and checked_count % 100 == 0:
+                if skipped_by_date > checked_count * 0.8:  # More than 80% skipped
+                    logger.info(f"Checked {checked_count} PRs, {skipped_by_date} skipped by date (>80%). Stopping.")
+                    break
+            
+            if self.sync_pull_request(pr, db):
+                synced_count += 1
+                if synced_count % 10 == 0:
+                    db.commit()
+                    logger.info(f"Synced {synced_count} merged PRs...")
+            else:
+                skipped_count += 1
+        
+        # Sync recently closed (non-merged) PRs
+        logger.info("Syncing closed (non-merged) PRs...")
+        for pr in self.repo.get_pulls(state='closed', sort='updated', direction='desc'):
+            if pr.merged:
+                continue  # Skip merged PRs, already handled above
+            
             if pr.updated_at < since:
-                # PRs sorted by updated_at desc, so break when we hit old ones
                 break
             if self.sync_pull_request(pr, db):
                 synced_count += 1
@@ -1272,7 +1319,7 @@ class GitHubService:
                 skipped_count += 1
         
         db.commit()
-        logger.info(f"Full sync completed: synced {synced_count} PRs, skipped {skipped_count}")
+        logger.info(f"Sync completed: synced {synced_count} PRs (open + merged + closed), skipped {skipped_count}")
         
         # Update aggregated metrics
         logger.info("Updating aggregated metrics...")

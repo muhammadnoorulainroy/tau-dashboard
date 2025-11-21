@@ -2,9 +2,15 @@
 """
 Full sync script that runs in foreground with visible logs.
 This script directly invokes the GitHub sync service with detailed logging.
+
+Usage:
+    python sync_full.py              # Sync from oldest PR in DB
+    python sync_full.py --days 30    # Sync last 30 days only
+    python sync_full.py --days 60    # Sync last 60 days only
 """
 import sys
 import logging
+import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -28,8 +34,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def run_full_sync():
-    """Run a full sync with detailed logging"""
+def run_full_sync(days: int = None):
+    """
+    Run a full sync with detailed logging.
+    
+    Args:
+        days: Number of days to sync. If None, syncs from oldest PR in DB.
+    """
     db = SessionLocal()
     
     try:
@@ -48,26 +59,32 @@ def run_full_sync():
         
         logger.info("Lock acquired. Starting sync...")
         
-        # Get oldest PR to determine how far back to sync
+        # Determine how far back to sync
         logger.info("="*80)
         logger.info("FULL SYNC - Starting...")
         logger.info("="*80)
         
-        oldest_pr = db.query(PullRequest).order_by(PullRequest.created_at.asc()).first()
-        
-        if oldest_pr and oldest_pr.created_at:
-            created = oldest_pr.created_at
-            # Make timezone-aware if needed
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            
-            days_back = (datetime.now(timezone.utc) - created).days + 7
-            logger.info(f"Oldest PR in database: {oldest_pr.title}")
-            logger.info(f"Created at: {created}")
-            logger.info(f"Will sync PRs from last {days_back} days")
+        if days is not None:
+            # User specified number of days
+            days_back = days
+            logger.info(f"User specified: Will sync PRs from last {days_back} days")
         else:
-            days_back = 365
-            logger.warning("No PRs found in database, will sync last 365 days")
+            # Auto-calculate from oldest PR in database
+            oldest_pr = db.query(PullRequest).order_by(PullRequest.created_at.asc()).first()
+            
+            if oldest_pr and oldest_pr.created_at:
+                created = oldest_pr.created_at
+                # Make timezone-aware if needed
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                
+                days_back = (datetime.now(timezone.utc) - created).days + 7
+                logger.info(f"Oldest PR in database: {oldest_pr.title}")
+                logger.info(f"Created at: {created}")
+                logger.info(f"Will sync PRs from last {days_back} days")
+            else:
+                days_back = 365
+                logger.warning("No PRs found in database, will sync last 365 days")
         
         logger.info("="*80)
         logger.info("")
@@ -86,8 +103,36 @@ def run_full_sync():
         
         logger.info("")
         logger.info("="*80)
+        logger.info("Checking for reverted PRs and marking rework submissions...")
+        logger.info("="*80)
+        logger.info("")
+        
+        # Mark reverted PRs (folders that no longer exist on main branch)
+        logger.info("Verifying folder existence on main branch...")
+        reverted_count = github_service.mark_reverted_prs(db)
+        logger.info(f"Marked {reverted_count} PRs as reverted")
+        
+        # Mark initial submissions (first PR per folder, rest are rework)
+        logger.info("Identifying initial submissions vs rework PRs...")
+        initial_count = github_service.mark_initial_submissions(db)
+        logger.info(f"Marked {initial_count} PRs as initial submissions")
+        
+        # CRITICAL: Recalculate metrics with updated revert flags
+        logger.info("")
+        logger.info("Recalculating metrics with updated revert flags...")
+        github_service.update_developer_metrics(db)
+        github_service.update_reviewer_metrics(db)
+        github_service.update_domain_metrics(db)
+        github_service.update_interface_metrics(db)
+        logger.info("Metrics recalculated successfully")
+        
+        logger.info("")
+        logger.info("="*80)
         logger.info(f"FULL SYNC COMPLETED")
         logger.info(f"   Total PRs synced: {synced_count}")
+        logger.info(f"   Reverted PRs: {reverted_count}")
+        logger.info(f"   Initial submissions: {initial_count}")
+        logger.info(f"   Rework PRs: {synced_count - initial_count - reverted_count}")
         logger.info("="*80)
         
         return synced_count
@@ -110,10 +155,28 @@ def run_full_sync():
         db.close()
 
 if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='Full sync script for TAU Dashboard',
+        epilog='''
+Examples:
+  python sync_full.py              # Sync from oldest PR in database
+  python sync_full.py --days 30    # Sync last 30 days only (faster)
+  python sync_full.py --days 60    # Sync last 60 days only
+        '''
+    )
+    parser.add_argument(
+        '--days',
+        type=int,
+        help='Number of days to sync (default: auto-detect from oldest PR)'
+    )
+    
+    args = parser.parse_args()
+    
     logger.info("TAU Dashboard - Full Sync")
     logger.info("")
     
-    synced_count = run_full_sync()
+    synced_count = run_full_sync(days=args.days)
     
     if synced_count > 0:
         logger.info("")

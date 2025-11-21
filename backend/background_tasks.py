@@ -251,7 +251,13 @@ async def start_similarity_calculation():
 
 
 async def start_revert_verification():
-    """Background task to verify reverted PRs and mark initial submissions daily."""
+    """
+    Background task to verify reverted PRs and mark initial submissions daily.
+    
+    Note: This task runs as a safety net. The full_sync and sync_last_3_days scripts
+    also perform this verification, so this task provides redundancy and catches any
+    PRs that were reverted between sync runs.
+    """
     try:
         # Wait 2 hours before starting first verification to allow initial sync to complete
         await asyncio.sleep(7200)  # 2 hours

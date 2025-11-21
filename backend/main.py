@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -431,7 +431,10 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
         
         total_prs = db.query(PullRequest).count()
         open_prs = db.query(PullRequest).filter_by(state='open').count()
-        merged_prs = db.query(PullRequest).filter_by(merged=True, is_reverted=False).count()  # Exclude reverted PRs
+        merged_prs = db.query(PullRequest).filter(
+            PullRequest.merged == True, 
+            PullRequest.is_reverted.isnot(True)  # Exclude reverted PRs (NULL = not reverted)
+        ).count()
         
         total_developers = db.query(Developer).count()
         total_reviewers = db.query(Reviewer).count()
@@ -552,10 +555,10 @@ def get_developer_metrics(
                     pr_stats = db.query(
                         func.count(PullRequest.id).label('total_prs'),
                         func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
-                        func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted == False), 1), else_=0)).label('merged_prs'),  # Exclude reverted
+                        func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted.isnot(True)), 1), else_=0)).label('merged_prs'),  # Exclude reverted (NULL = not reverted)
                         func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                         func.sum(PullRequest.rework_count).label('total_rework'),
-                        func.avg(case(((PullRequest.merged == True) & (PullRequest.is_reverted == False), PullRequest.rework_count), else_=None)).label('avg_rework')  # Exclude reverted
+                        func.avg(case(((PullRequest.merged == True) & (PullRequest.is_reverted.isnot(True)), PullRequest.rework_count), else_=None)).label('avg_rework')  # Exclude reverted (NULL = not reverted)
                     ).filter(
                         PullRequest.developer_username == github_user,
                         PullRequest.domain == domain
@@ -705,7 +708,7 @@ def get_developer_metrics(
                 pr_stats = db.query(
                     func.count(PullRequest.id).label('total_prs'),
                     func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
-                    func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted == False), 1), else_=0)).label('merged_prs'),  # Exclude reverted
+                    func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted.isnot(True)), 1), else_=0)).label('merged_prs'),  # Exclude reverted (NULL = not reverted)
                     func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                     func.sum(PullRequest.rework_count).label('total_rework')
                 ).filter(
@@ -1366,7 +1369,8 @@ def get_pr_state_distribution(
 ):
     """Get PR state distribution by labels."""
     try:
-        query = db.query(PullRequest)
+        # Exclude reverted PRs from distribution counts (NULL = not reverted)
+        query = db.query(PullRequest).filter(PullRequest.is_reverted.isnot(True))
         if domain:
             query = query.filter_by(domain=domain)
         
@@ -1419,7 +1423,8 @@ def get_pull_requests(
         
         if state:
             if state == 'merged':
-                query = query.filter_by(merged=True)
+                # Exclude reverted PRs from merged count (NULL = not reverted)
+                query = query.filter(PullRequest.merged == True, PullRequest.is_reverted.isnot(True))
             else:
                 query = query.filter_by(state=state)
         
@@ -1479,6 +1484,9 @@ def get_pull_requests(
                 'task_trials_passed': pr.task_trials_passed,
                 'task_trials_failed': pr.task_trials_failed,
                 'task_success_rate': pr.task_success_rate,
+                'task_folder_path': pr.task_folder_path,
+                'is_reverted': pr.is_reverted,
+                'is_initial_submission': pr.is_initial_submission,
                 'turing_email': None
             }
             
@@ -2248,8 +2256,11 @@ def get_filtered_interface_metrics(
     """Get filtered interface metrics by week, domain, trainer, and status."""
     from database import Domain
     try:
-        # Build query
-        query = db.query(PullRequest)
+        # Build query - exclude reverted PRs from all counts
+        # Note: NULL is treated as "not reverted" (for PRs not yet backfilled)
+        query = db.query(PullRequest).filter(
+            PullRequest.is_reverted.isnot(True)  # Excludes only True, includes False and NULL
+        )
         
         # Apply filters
         if week_id:
@@ -2795,7 +2806,7 @@ async def get_task_similarity(
         query = db.query(PullRequest).filter(
             PullRequest.domain == domain,
             PullRequest.merged == True,
-            PullRequest.is_reverted == False,  # Exclude reverted PRs
+            PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
             PullRequest.instruction_text != None,
             PullRequest.instruction_text != ''
         )
@@ -2958,6 +2969,119 @@ async def get_task_similarity(
     
     except Exception as e:
         logger.error(f"Error getting task similarity: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/task-similarity/search")
+async def search_similar_tasks(
+    instruction: str = Body(...),
+    domain: str = Body(...),
+    limit: int = Body(20),
+    db: Session = Depends(get_db)
+):
+    """
+    Search for similar tasks by comparing a custom instruction against all merged PRs in a domain.
+    
+    Args:
+        instruction: The instruction text to compare
+        domain: The domain to search in
+        limit: Maximum number of results to return (default: 20)
+    
+    Returns:
+        List of most similar tasks with their similarity scores
+    """
+    try:
+        from similarity_service import SimilarityService
+        from database import TaskEmbedding
+        from sklearn.metrics.pairwise import cosine_similarity
+        import numpy as np
+        
+        # Validate input
+        if not instruction or not instruction.strip():
+            raise HTTPException(status_code=400, detail="Instruction text is required")
+        
+        if not domain or not domain.strip():
+            raise HTTPException(status_code=400, detail="Domain is required")
+        
+        # Initialize similarity service
+        similarity_service = SimilarityService()
+        
+        # Generate embedding for the input instruction
+        logger.info(f"Generating embedding for custom instruction (domain: {domain})")
+        input_embedding = similarity_service.generate_embedding(instruction.strip())
+        
+        if input_embedding is None:
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to generate embedding. Similarity model may not be loaded."
+            )
+        
+        # Get all merged PRs with embeddings in this domain (exclude reverted PRs)
+        prs_with_embeddings = db.query(PullRequest, TaskEmbedding).join(
+            TaskEmbedding, PullRequest.id == TaskEmbedding.pr_id
+        ).filter(
+            PullRequest.domain == domain,
+            PullRequest.merged == True,
+            PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs
+            PullRequest.instruction_text != None,
+            PullRequest.instruction_text != ''
+        ).all()
+        
+        if not prs_with_embeddings:
+            return {
+                "domain": domain,
+                "instruction_preview": instruction[:200] + "..." if len(instruction) > 200 else instruction,
+                "results": [],
+                "count": 0,
+                "message": f"No tasks with embeddings found in domain '{domain}'"
+            }
+        
+        # Calculate similarity scores
+        logger.info(f"Calculating similarity against {len(prs_with_embeddings)} tasks")
+        similarities = []
+        
+        for pr, embedding_obj in prs_with_embeddings:
+            # Convert stored embedding to numpy array
+            # Embedding is stored as ARRAY(Float) in PostgreSQL
+            pr_embedding = np.array(embedding_obj.embedding, dtype=np.float32).reshape(1, -1)
+            input_emb_reshaped = input_embedding.reshape(1, -1)
+            
+            # Calculate cosine similarity
+            similarity_score = cosine_similarity(input_emb_reshaped, pr_embedding)[0][0]
+            
+            similarities.append({
+                "pr_id": pr.id,
+                "pr_number": pr.number,  # Correct: 'number' not 'pr_number'
+                "pr_title": pr.title,
+                "task_folder_path": pr.task_folder_path,
+                "trainer_name": pr.developer_username,
+                "week_num": pr.week_num,
+                "interface_num": pr.interface_num,
+                "difficulty": pr.actual_difficulty,
+                "pass_rate": (pr.pass_count / pr.total_trials * 100) if pr.total_trials and pr.total_trials > 0 else None,
+                "instruction": pr.instruction_text,
+                "instruction_preview": pr.instruction_text[:150] + "..." if pr.instruction_text and len(pr.instruction_text) > 150 else pr.instruction_text,
+                "similarity": float(similarity_score)
+            })
+        
+        # Sort by similarity (highest first) and limit results
+        similarities.sort(key=lambda x: x['similarity'], reverse=True)
+        top_results = similarities[:limit]
+        
+        logger.info(f"Found {len(similarities)} tasks, returning top {len(top_results)}")
+        
+        return {
+            "domain": domain,
+            "instruction_preview": instruction[:200] + "..." if len(instruction) > 200 else instruction,
+            "instruction_length": len(instruction),
+            "results": top_results,
+            "count": len(top_results),
+            "total_compared": len(similarities)
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching similar tasks: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

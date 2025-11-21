@@ -179,18 +179,34 @@ def sync_last_3_days():
         
         logger.info(f"\nPR sync complete: {synced_count} synced, {skipped_count} skipped")
         
-        # Update aggregated metrics
-        logger.info("\nUpdating developer metrics...")
+        # Check for reverted PRs and mark rework submissions
+        logger.info("\n" + "="*80)
+        logger.info("Checking for reverted PRs and marking rework submissions...")
+        logger.info("="*80)
+        
+        # Mark reverted PRs (folders that no longer exist on main branch)
+        logger.info("Verifying folder existence on main branch...")
+        reverted_count = github_service.mark_reverted_prs(db)
+        logger.info(f"Marked {reverted_count} PRs as reverted")
+        
+        # Mark initial submissions (first PR per folder, rest are rework)
+        logger.info("Identifying initial submissions vs rework PRs...")
+        initial_count = github_service.mark_initial_submissions(db)
+        logger.info(f"Marked {initial_count} PRs as initial submissions")
+        
+        # CRITICAL: Recalculate metrics with updated revert flags
+        logger.info("\nRecalculating metrics with updated revert flags...")
         github_service.update_developer_metrics(db)
         logger.info("Developer metrics updated")
         
-        logger.info("Updating reviewer metrics...")
         github_service.update_reviewer_metrics(db)
         logger.info("Reviewer metrics updated")
         
-        logger.info("Updating domain metrics...")
         github_service.update_domain_metrics(db)
         logger.info("Domain metrics updated")
+        
+        github_service.update_interface_metrics(db)
+        logger.info("Interface metrics updated")
         
         # Final commit for any remaining changes
         db.commit()
@@ -202,6 +218,9 @@ def sync_last_3_days():
         print(f"  Total PRs found: {total_prs}")
         print(f"  Successfully synced: {synced_count}")
         print(f"  Skipped: {skipped_count}")
+        print(f"  Reverted PRs: {reverted_count}")
+        print(f"  Initial submissions: {initial_count}")
+        print(f"  Rework PRs: {synced_count - initial_count - reverted_count}")
         print(f"  Time range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         print("\n" + "="*80 + "\n")
         

@@ -106,7 +106,7 @@ class SimilarityService:
             prs = db.query(PullRequest).filter(
                 PullRequest.domain == domain,
                 PullRequest.merged == True,
-                PullRequest.is_reverted == False,  # Exclude reverted PRs
+                PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
                 PullRequest.instruction_text != None,
                 PullRequest.instruction_text != ''
             ).all()
@@ -221,7 +221,7 @@ class SimilarityService:
             new_prs = db.query(PullRequest).filter(
                 PullRequest.id.in_(pr_ids),
                 PullRequest.merged == True,
-                PullRequest.is_reverted == False,  # Exclude reverted PRs
+                PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
                 PullRequest.instruction_text != None,
                 PullRequest.instruction_text != ''
             ).all()
@@ -245,7 +245,7 @@ class SimilarityService:
                 all_prs = db.query(PullRequest).filter(
                     PullRequest.domain == domain,
                     PullRequest.merged == True,
-                    PullRequest.is_reverted == False,  # Exclude reverted PRs
+                    PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
                     PullRequest.instruction_text != None,
                     PullRequest.instruction_text != ''
                 ).all()
