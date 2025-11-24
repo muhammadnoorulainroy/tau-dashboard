@@ -85,8 +85,14 @@ class SimilarityService:
             logger.debug(f"Created and cached embedding for PR {pr_id}")
             return embedding_vector
         except Exception as e:
-            logger.error(f"Error storing embedding for PR {pr_id}: {e}")
             db.rollback()
+            
+            # If duplicate key error, the embedding already exists - just return the vector
+            if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
+                logger.debug(f"PR {pr_id}: Instruction embedding already exists in DB")
+                return embedding_vector
+            
+            logger.error(f"Error storing embedding for PR {pr_id}: {e}")
             return embedding_vector  # Return the embedding even if storage failed
     
     def calculate_similarity_for_domain(self, domain: str, db: Session) -> bool:
@@ -102,10 +108,11 @@ class SimilarityService:
             True if successful, False otherwise
         """
         try:
-            # Get all merged PRs with instructions in this domain
+            # Get all merged PRs with instructions in this domain (exclude reverted PRs)
             prs = db.query(PullRequest).filter(
                 PullRequest.domain == domain,
                 PullRequest.merged == True,
+                PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
                 PullRequest.instruction_text != None,
                 PullRequest.instruction_text != ''
             ).all()
@@ -129,9 +136,13 @@ class SimilarityService:
                 logger.warning(f"Domain {domain}: Not enough valid embeddings ({len(embeddings)})")
                 return False
             
+            # Build a map of PR ID -> PR object for quick lookup
+            pr_map = {pr.id: pr for pr in prs}
+            
             # Calculate pairwise similarities
             pr_ids = list(embeddings.keys())
             similarities_calculated = 0
+            skipped_same_task = 0
             
             for i in range(len(pr_ids)):
                 for j in range(i + 1, len(pr_ids)):
@@ -140,6 +151,14 @@ class SimilarityService:
                     # Ensure pr_id_1 < pr_id_2 for consistent ordering
                     if pr_id_1 > pr_id_2:
                         pr_id_1, pr_id_2 = pr_id_2, pr_id_1
+                    
+                    # Skip if both PRs belong to the same task folder (rework PRs)
+                    pr1 = pr_map.get(pr_id_1)
+                    pr2 = pr_map.get(pr_id_2)
+                    if pr1 and pr2 and pr1.task_folder_path and pr2.task_folder_path:
+                        if pr1.task_folder_path == pr2.task_folder_path:
+                            skipped_same_task += 1
+                            continue
                     
                     # Check if similarity already exists
                     existing = db.query(TaskSimilarity).filter(
@@ -179,6 +198,8 @@ class SimilarityService:
             # Final commit
             db.commit()
             logger.info(f"Domain {domain}: Successfully calculated {similarities_calculated} new similarities")
+            if skipped_same_task > 0:
+                logger.info(f"Domain {domain}: Skipped {skipped_same_task} same-task PR pairs (rework PRs)")
             return True
             
         except Exception as e:
@@ -202,10 +223,11 @@ class SimilarityService:
             return True
         
         try:
-            # Get the new PRs
+            # Get the new PRs (exclude reverted PRs)
             new_prs = db.query(PullRequest).filter(
                 PullRequest.id.in_(pr_ids),
                 PullRequest.merged == True,
+                PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
                 PullRequest.instruction_text != None,
                 PullRequest.instruction_text != ''
             ).all()
@@ -225,10 +247,11 @@ class SimilarityService:
             for domain, domain_new_prs in domains.items():
                 logger.info(f"Domain {domain}: Calculating similarities for {len(domain_new_prs)} new PRs")
                 
-                # Get all existing PRs in the domain
+                # Get all existing PRs in the domain (exclude reverted PRs)
                 all_prs = db.query(PullRequest).filter(
                     PullRequest.domain == domain,
                     PullRequest.merged == True,
+                    PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
                     PullRequest.instruction_text != None,
                     PullRequest.instruction_text != ''
                 ).all()
@@ -243,6 +266,7 @@ class SimilarityService:
                 # Calculate similarities for pairs involving new PRs
                 new_pr_ids_set = {pr.id for pr in domain_new_prs}
                 similarities_calculated = 0
+                skipped_same_task = 0
                 
                 for i, pr1 in enumerate(all_prs):
                     if pr1.id not in embeddings:
@@ -257,6 +281,12 @@ class SimilarityService:
                         # Skip if neither PR is new
                         if pr1.id not in new_pr_ids_set and pr2.id not in new_pr_ids_set:
                             continue
+                        
+                        # Skip if both PRs belong to the same task folder (rework PRs)
+                        if pr1.task_folder_path and pr2.task_folder_path:
+                            if pr1.task_folder_path == pr2.task_folder_path:
+                                skipped_same_task += 1
+                                continue
                         
                         pr_id_1 = min(pr1.id, pr2.id)
                         pr_id_2 = max(pr1.id, pr2.id)
@@ -294,6 +324,8 @@ class SimilarityService:
                 
                 db.commit()
                 logger.info(f"Domain {domain}: Calculated {similarities_calculated} new similarities")
+                if skipped_same_task > 0:
+                    logger.info(f"Domain {domain}: Skipped {skipped_same_task} same-task PR pairs (rework PRs)")
             
             return True
             

@@ -24,7 +24,7 @@ if env_path.exists():
 else:
     print(f"Warning: .env file not found at {env_path}")
 
-from database import SessionLocal
+from database import SessionLocal, PullRequest, ActionEmbedding
 from github_service import GitHubService
 from config import settings
 from sqlalchemy import text
@@ -41,12 +41,15 @@ def sync_last_3_days():
     """
     Perform a full sync for PRs updated in the last 3 days.
     This includes:
-    - All PRs (open/closed/merged) updated in last 3 days
+    - Open PRs updated in last 3 days
+    - Merged PRs updated in last 3 days
     - All reviews for those PRs
     - All check runs for those PRs
     - Task execution results
     - Developer/Reviewer metrics updates
     - Domain metrics updates
+    
+    Note: Closed (non-merged) PRs are excluded
     """
     
     print("\n" + "="*80)
@@ -55,7 +58,8 @@ def sync_last_3_days():
     print(f"\nRepository: {settings.github_repo}")
     print(f"Time Range: Last 3 days")
     print("\nThis will:")
-    print("  - Fetch all PRs updated in the last 3 days")
+    print("  - Fetch open and merged PRs updated in the last 3 days")
+    print("  - NOTE: Closed (non-merged) PRs are excluded")
     print("  - Update reviews, check runs, and task results")
     print("  - Recalculate all metrics (developers, reviewers, domains)")
     print("\n" + "="*80 + "\n")
@@ -93,10 +97,12 @@ def sync_last_3_days():
         # Fetch PRs from the last 3 days
         repo = github_service.repo
         
-        # Get all PRs (open, closed, merged) updated in last 3 days
+        # Get PRs updated in last 3 days
         all_prs = []
         
         # Fetch closed/merged PRs
+        # Note: GitHub returns both merged and closed (non-merged) PRs with state='closed'
+        # Fetch closed PRs (includes merged PRs since merged PRs have state='closed')
         logger.info("Fetching closed/merged PRs from last 3 days...")
         closed_prs = repo.get_pulls(
             state='closed',
@@ -114,7 +120,7 @@ def sync_last_3_days():
             if closed_count % 50 == 0:
                 logger.info(f"  Fetched {closed_count} closed/merged PRs...")
         
-        logger.info(f"Found {closed_count} closed/merged PRs")
+        logger.info(f"Found {closed_count} closed/merged PRs (includes both merged and closed non-merged)")
         
         # Fetch open PRs
         logger.info("Fetching open PRs from last 3 days...")
@@ -150,6 +156,11 @@ def sync_last_3_days():
         
         for i, pr in enumerate(all_prs, 1):
             try:
+                # Skip closed (non-merged) PRs - we only want open and merged PRs
+                if pr.state == 'closed' and not pr.merged:
+                    skipped_count += 1
+                    continue
+                
                 # Sync PR with all nested data (reviews, check runs, task results)
                 db_pr = github_service.sync_pull_request(pr, db, skip_nested_data=False)
                 
@@ -179,18 +190,101 @@ def sync_last_3_days():
         
         logger.info(f"\nPR sync complete: {synced_count} synced, {skipped_count} skipped")
         
-        # Update aggregated metrics
-        logger.info("\nUpdating developer metrics...")
+        # Check for reverted PRs and mark rework submissions
+        logger.info("\n" + "="*80)
+        logger.info("Checking for reverted PRs and marking rework submissions...")
+        logger.info("="*80)
+        
+        # Mark reverted PRs (folders that no longer exist on main branch)
+        logger.info("Verifying folder existence on main branch...")
+        reverted_count = github_service.mark_reverted_prs(db)
+        logger.info(f"Marked {reverted_count} PRs as reverted")
+        
+        # Mark initial submissions (first PR per folder, rest are rework)
+        logger.info("Identifying initial submissions vs rework PRs...")
+        initial_count = github_service.mark_initial_submissions(db)
+        logger.info(f"Marked {initial_count} PRs as initial submissions")
+        
+        # CRITICAL: Recalculate metrics with updated revert flags
+        logger.info("\nRecalculating metrics with updated revert flags...")
         github_service.update_developer_metrics(db)
         logger.info("Developer metrics updated")
         
-        logger.info("Updating reviewer metrics...")
         github_service.update_reviewer_metrics(db)
         logger.info("Reviewer metrics updated")
         
-        logger.info("Updating domain metrics...")
         github_service.update_domain_metrics(db)
         logger.info("Domain metrics updated")
+        
+        github_service.update_interface_metrics(db)
+        logger.info("Interface metrics updated")
+        
+        # Generate action embeddings and calculate similarities
+        logger.info("\n" + "="*80)
+        logger.info("Generating action embeddings and calculating similarities...")
+        logger.info("="*80)
+        
+        embeddings_created = 0
+        total_similarities = 0
+        
+        try:
+            from action_similarity_service import ActionSimilarityService
+            action_service = ActionSimilarityService()
+            
+            # Get all merged PRs without action embeddings (from last 3 days)
+            logger.info("Finding PRs that need action embeddings...")
+            prs_without_embeddings = db.query(PullRequest).outerjoin(
+                ActionEmbedding, PullRequest.id == ActionEmbedding.pr_id
+            ).filter(
+                PullRequest.merged == True,
+                PullRequest.is_reverted.isnot(True),
+                PullRequest.updated_at >= start_date,
+                ActionEmbedding.id == None
+            ).all()
+            
+            logger.info(f"Found {len(prs_without_embeddings)} PRs without action embeddings")
+            
+            # Generate embeddings
+            new_pr_ids = []
+            for pr in prs_without_embeddings:
+                try:
+                    embedding = action_service.get_or_create_embedding(pr, db)
+                    if embedding:
+                        embeddings_created += 1
+                        new_pr_ids.append(pr.id)
+                        if embeddings_created % 10 == 0:
+                            logger.info(f"  Generated {embeddings_created}/{len(prs_without_embeddings)} embeddings...")
+                except Exception as e:
+                    logger.warning(f"  Failed to generate embedding for PR #{pr.number}: {e}")
+            
+            logger.info(f"Generated {embeddings_created} action embeddings")
+            
+            # Calculate similarities for new PRs against existing ones
+            if new_pr_ids:
+                logger.info("")
+                logger.info("Calculating action similarities for new PRs...")
+                
+                # Get distinct domains from new PRs
+                domains = db.query(PullRequest.domain).filter(
+                    PullRequest.id.in_(new_pr_ids)
+                ).distinct().all()
+                
+                for (domain,) in domains:
+                    if not domain:
+                        continue
+                    logger.info(f"  Processing domain: {domain}")
+                    domain_new_prs = [pr_id for pr_id in new_pr_ids if db.query(PullRequest).filter(
+                        PullRequest.id == pr_id, PullRequest.domain == domain
+                    ).first()]
+                    similarity_count = action_service.calculate_similarity_for_new_prs(domain, domain_new_prs, db)
+                    total_similarities += similarity_count
+                    logger.info(f"    Calculated {similarity_count} similarity pairs")
+                
+                logger.info(f"Total action similarities calculated: {total_similarities}")
+            
+        except Exception as e:
+            logger.error(f"Error generating action similarities: {e}", exc_info=True)
+            logger.warning("Action similarity generation failed, but sync completed successfully")
         
         # Final commit for any remaining changes
         db.commit()
@@ -200,8 +294,13 @@ def sync_last_3_days():
         print("="*80)
         print(f"\nSummary:")
         print(f"  Total PRs found: {total_prs}")
-        print(f"  Successfully synced: {synced_count}")
-        print(f"  Skipped: {skipped_count}")
+        print(f"  Successfully synced: {synced_count} (open + merged)")
+        print(f"  Skipped: {skipped_count} (includes closed non-merged PRs)")
+        print(f"  Reverted PRs: {reverted_count}")
+        print(f"  Initial submissions: {initial_count}")
+        print(f"  Rework PRs: {synced_count - initial_count - reverted_count}")
+        print(f"  Action embeddings: {embeddings_created}")
+        print(f"  Action similarities: {total_similarities}")
         print(f"  Time range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         print("\n" + "="*80 + "\n")
         

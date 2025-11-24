@@ -138,12 +138,13 @@ async def lifespan(app: FastAPI):
     three_day_sync_task = None
     similarity_task = None
     try:
-        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync, start_similarity_calculation
+        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync, start_similarity_calculation, start_revert_verification
         background_task = asyncio.create_task(start_background_sync(manager))
         domain_refresh_task = asyncio.create_task(start_domain_refresh())
         three_day_sync_task = asyncio.create_task(start_3_day_sync(manager))
         similarity_task = asyncio.create_task(start_similarity_calculation())
-        logger.info("Background sync, domain refresh, 3-day sync, and similarity calculation tasks started")
+        revert_verification_task = asyncio.create_task(start_revert_verification())
+        logger.info("Background sync, domain refresh, 3-day sync, similarity calculation, and revert verification tasks started")
     except ImportError as e:
         logger.warning(f"Background sync module not available: {str(e)}")
     except Exception as e:
@@ -430,7 +431,11 @@ def get_dashboard_overview(db: Session = Depends(get_db)):
         
         total_prs = db.query(PullRequest).count()
         open_prs = db.query(PullRequest).filter_by(state='open').count()
-        merged_prs = db.query(PullRequest).filter_by(merged=True).count()
+        merged_prs = db.query(PullRequest).filter(
+            PullRequest.merged == True, 
+            PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
+            PullRequest.is_initial_submission == True  # Count only unique tasks
+        ).count()
         
         total_developers = db.query(Developer).count()
         total_reviewers = db.query(Reviewer).count()
@@ -551,10 +556,10 @@ def get_developer_metrics(
                     pr_stats = db.query(
                         func.count(PullRequest.id).label('total_prs'),
                         func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
-                        func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                        func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted.isnot(True)) & (PullRequest.is_initial_submission == True), 1), else_=0)).label('merged_prs'),  # Count only unique tasks
                         func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                         func.sum(PullRequest.rework_count).label('total_rework'),
-                        func.avg(case((PullRequest.merged == True, PullRequest.rework_count), else_=None)).label('avg_rework')
+                        func.avg(case(((PullRequest.merged == True) & (PullRequest.is_reverted.isnot(True)) & (PullRequest.is_initial_submission == True), PullRequest.rework_count), else_=None)).label('avg_rework')  # Count only unique tasks
                     ).filter(
                         PullRequest.developer_username == github_user,
                         PullRequest.domain == domain
@@ -606,20 +611,25 @@ def get_developer_metrics(
                     }
                 })
             
-            # Sort the data
+            # Sort the data (handle None values by treating them as 0)
             reverse_order = (sort_order.lower() == "desc")
             if sort_by == "total_prs":
-                developers_data = sorted(developers_data, key=lambda x: x['total_prs'], reverse=reverse_order)
+                developers_data = sorted(developers_data, key=lambda x: (x['total_prs'] or 0), reverse=reverse_order)
             elif sort_by == "open_prs":
-                developers_data = sorted(developers_data, key=lambda x: x['open_prs'], reverse=reverse_order)
+                developers_data = sorted(developers_data, key=lambda x: (x['open_prs'] or 0), reverse=reverse_order)
             elif sort_by == "merged_prs":
-                developers_data = sorted(developers_data, key=lambda x: x['merged_prs'], reverse=reverse_order)
+                developers_data = sorted(developers_data, key=lambda x: (x['merged_prs'] or 0), reverse=reverse_order)
             elif sort_by == "closed_prs":
-                developers_data = sorted(developers_data, key=lambda x: x['closed_prs'], reverse=reverse_order)
+                developers_data = sorted(developers_data, key=lambda x: (x['closed_prs'] or 0), reverse=reverse_order)
             elif sort_by == "total_rework":
-                developers_data = sorted(developers_data, key=lambda x: x['total_rework'], reverse=reverse_order)
+                developers_data = sorted(developers_data, key=lambda x: (x['total_rework'] or 0), reverse=reverse_order)
             elif sort_by == "avg_rework":
-                developers_data = sorted(developers_data, key=lambda x: x['metrics']['avg_rework'], reverse=reverse_order)
+                developers_data = sorted(developers_data, key=lambda x: (x['metrics']['avg_rework'] or 0), reverse=reverse_order)
+            elif sort_by == "username":
+                developers_data = sorted(developers_data, key=lambda x: (x['username'] or '').lower(), reverse=reverse_order)
+            else:
+                # Default sort by merged_prs descending
+                developers_data = sorted(developers_data, key=lambda x: (x['merged_prs'] or 0), reverse=True)
             
             total = len(developers_data)
             
@@ -704,7 +714,7 @@ def get_developer_metrics(
                 pr_stats = db.query(
                     func.count(PullRequest.id).label('total_prs'),
                     func.sum(case((PullRequest.state == 'open', 1), else_=0)).label('open_prs'),
-                    func.sum(case((PullRequest.merged == True, 1), else_=0)).label('merged_prs'),
+                    func.sum(case(((PullRequest.merged == True) & (PullRequest.is_reverted.isnot(True)) & (PullRequest.is_initial_submission == True), 1), else_=0)).label('merged_prs'),  # Count only unique tasks
                     func.sum(case(((PullRequest.state == 'closed') & (PullRequest.merged == False), 1), else_=0)).label('closed_prs'),
                     func.sum(PullRequest.rework_count).label('total_rework')
                 ).filter(
@@ -756,20 +766,25 @@ def get_developer_metrics(
                 }
             })
         
-        # Sort the data
+        # Sort the data (handle None values by treating them as 0)
         reverse_order = (sort_order.lower() == "desc")
         if sort_by == "total_prs":
-            developers_data = sorted(developers_data, key=lambda x: x['total_prs'], reverse=reverse_order)
+            developers_data = sorted(developers_data, key=lambda x: (x['total_prs'] or 0), reverse=reverse_order)
         elif sort_by == "open_prs":
-            developers_data = sorted(developers_data, key=lambda x: x['open_prs'], reverse=reverse_order)
+            developers_data = sorted(developers_data, key=lambda x: (x['open_prs'] or 0), reverse=reverse_order)
         elif sort_by == "merged_prs":
-            developers_data = sorted(developers_data, key=lambda x: x['merged_prs'], reverse=reverse_order)
+            developers_data = sorted(developers_data, key=lambda x: (x['merged_prs'] or 0), reverse=reverse_order)
         elif sort_by == "closed_prs":
-            developers_data = sorted(developers_data, key=lambda x: x['closed_prs'], reverse=reverse_order)
+            developers_data = sorted(developers_data, key=lambda x: (x['closed_prs'] or 0), reverse=reverse_order)
         elif sort_by == "total_rework":
-            developers_data = sorted(developers_data, key=lambda x: x['total_rework'], reverse=reverse_order)
+            developers_data = sorted(developers_data, key=lambda x: (x['total_rework'] or 0), reverse=reverse_order)
         elif sort_by == "avg_rework":
-            developers_data = sorted(developers_data, key=lambda x: x['metrics']['avg_rework'], reverse=reverse_order)
+            developers_data = sorted(developers_data, key=lambda x: (x['metrics']['avg_rework'] or 0), reverse=reverse_order)
+        elif sort_by == "username":
+            developers_data = sorted(developers_data, key=lambda x: (x['username'] or '').lower(), reverse=reverse_order)
+        else:
+            # Default sort by merged_prs descending
+            developers_data = sorted(developers_data, key=lambda x: (x['merged_prs'] or 0), reverse=True)
         
         total = len(developers_data)
         
@@ -841,7 +856,7 @@ def get_reviewer_metrics(
         
         # If domain filter is applied, show ALL reviewers but with stats from that domain only
         if domain:
-            from sqlalchemy import case, or_
+            from sqlalchemy import case, or_, func
             from datetime import datetime, timezone
             
             # Step 1: Get all unique usernames (UNION of sheet reviewers and actual reviewers in this domain)
@@ -988,18 +1003,23 @@ def get_reviewer_metrics(
                     }
                 })
             
-            # Sort the data
+            # Sort the data (handle None values by treating them as 0)
             reverse_order = (sort_order.lower() == "desc")
             if sort_by == "total_reviews":
-                reviewers_data = sorted(reviewers_data, key=lambda x: x['total_reviews'], reverse=reverse_order)
+                reviewers_data = sorted(reviewers_data, key=lambda x: (x['total_reviews'] or 0), reverse=reverse_order)
             elif sort_by == "approved_reviews":
-                reviewers_data = sorted(reviewers_data, key=lambda x: x['approved_reviews'], reverse=reverse_order)
+                reviewers_data = sorted(reviewers_data, key=lambda x: (x['approved_reviews'] or 0), reverse=reverse_order)
             elif sort_by == "changes_requested":
-                reviewers_data = sorted(reviewers_data, key=lambda x: x['changes_requested'], reverse=reverse_order)
+                reviewers_data = sorted(reviewers_data, key=lambda x: (x['changes_requested'] or 0), reverse=reverse_order)
             elif sort_by == "approval_rate":
-                reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['approval_rate'], reverse=reverse_order)
+                reviewers_data = sorted(reviewers_data, key=lambda x: (x['metrics']['approval_rate'] or 0), reverse=reverse_order)
             elif sort_by == "pending_reviews":
-                reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['pending_reviews'], reverse=reverse_order)
+                reviewers_data = sorted(reviewers_data, key=lambda x: (x['metrics']['pending_reviews'] or 0), reverse=reverse_order)
+            elif sort_by == "username":
+                reviewers_data = sorted(reviewers_data, key=lambda x: (x['username'] or '').lower(), reverse=reverse_order)
+            else:
+                # Default sort by total_reviews descending
+                reviewers_data = sorted(reviewers_data, key=lambda x: (x['total_reviews'] or 0), reverse=True)
             
             total = len(reviewers_data)
             
@@ -1153,18 +1173,23 @@ def get_reviewer_metrics(
                 }
             })
         
-        # Sort the data
+        # Sort the data (handle None values by treating them as 0)
         reverse_order = (sort_order.lower() == "desc")
         if sort_by == "total_reviews":
-            reviewers_data = sorted(reviewers_data, key=lambda x: x['total_reviews'], reverse=reverse_order)
+            reviewers_data = sorted(reviewers_data, key=lambda x: (x['total_reviews'] or 0), reverse=reverse_order)
         elif sort_by == "approved_reviews":
-            reviewers_data = sorted(reviewers_data, key=lambda x: x['approved_reviews'], reverse=reverse_order)
+            reviewers_data = sorted(reviewers_data, key=lambda x: (x['approved_reviews'] or 0), reverse=reverse_order)
         elif sort_by == "changes_requested":
-            reviewers_data = sorted(reviewers_data, key=lambda x: x['changes_requested'], reverse=reverse_order)
+            reviewers_data = sorted(reviewers_data, key=lambda x: (x['changes_requested'] or 0), reverse=reverse_order)
         elif sort_by == "approval_rate":
-            reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['approval_rate'], reverse=reverse_order)
+            reviewers_data = sorted(reviewers_data, key=lambda x: (x['metrics']['approval_rate'] or 0), reverse=reverse_order)
         elif sort_by == "pending_reviews":
-            reviewers_data = sorted(reviewers_data, key=lambda x: x['metrics']['pending_reviews'], reverse=reverse_order)
+            reviewers_data = sorted(reviewers_data, key=lambda x: (x['metrics']['pending_reviews'] or 0), reverse=reverse_order)
+        elif sort_by == "username":
+            reviewers_data = sorted(reviewers_data, key=lambda x: (x['username'] or '').lower(), reverse=reverse_order)
+        else:
+            # Default sort by total_reviews descending
+            reviewers_data = sorted(reviewers_data, key=lambda x: (x['total_reviews'] or 0), reverse=True)
         
         total = len(reviewers_data)
         
@@ -1365,7 +1390,8 @@ def get_pr_state_distribution(
 ):
     """Get PR state distribution by labels."""
     try:
-        query = db.query(PullRequest)
+        # Exclude reverted PRs from distribution counts (NULL = not reverted)
+        query = db.query(PullRequest).filter(PullRequest.is_reverted.isnot(True))
         if domain:
             query = query.filter_by(domain=domain)
         
@@ -1418,7 +1444,12 @@ def get_pull_requests(
         
         if state:
             if state == 'merged':
-                query = query.filter_by(merged=True)
+                # Count only unique tasks (initial submissions, not rework)
+                query = query.filter(
+                    PullRequest.merged == True, 
+                    PullRequest.is_reverted.isnot(True),
+                    PullRequest.is_initial_submission == True
+                )
             else:
                 query = query.filter_by(state=state)
         
@@ -1478,6 +1509,9 @@ def get_pull_requests(
                 'task_trials_passed': pr.task_trials_passed,
                 'task_trials_failed': pr.task_trials_failed,
                 'task_success_rate': pr.task_success_rate,
+                'task_folder_path': pr.task_folder_path,
+                'is_reverted': pr.is_reverted,
+                'is_initial_submission': pr.is_initial_submission,
                 'turing_email': None
             }
             
@@ -2247,8 +2281,11 @@ def get_filtered_interface_metrics(
     """Get filtered interface metrics by week, domain, trainer, and status."""
     from database import Domain
     try:
-        # Build query
-        query = db.query(PullRequest)
+        # Build query - exclude reverted PRs from all counts
+        # Note: NULL is treated as "not reverted" (for PRs not yet backfilled)
+        query = db.query(PullRequest).filter(
+            PullRequest.is_reverted.isnot(True)  # Excludes only True, includes False and NULL
+        )
         
         # Apply filters
         if week_id:
@@ -2293,6 +2330,7 @@ def get_filtered_interface_metrics(
                     'total_tasks': 0,
                     'merged': 0,
                     'open': 0,
+                    'closed': 0,
                     'rework': 0,
                     'complexity': {
                         'merged': {'expert': 0, 'hard': 0, 'medium': 0},
@@ -2301,6 +2339,11 @@ def get_filtered_interface_metrics(
                 }
             
             stats = interface_stats[interface_num]
+            
+            # Only count initial submissions (unique tasks), not rework
+            if not pr.is_initial_submission:
+                continue
+            
             stats['total_tasks'] += 1
             
             # Track status
@@ -2317,6 +2360,7 @@ def get_filtered_interface_metrics(
                 stats['open'] += 1
                 status_counts['open'] += 1
             elif pr.state == 'closed':
+                stats['closed'] += 1
                 status_counts['closed'] += 1
             
             # Check labels for more specific status
@@ -2370,6 +2414,7 @@ def get_filtered_interface_metrics(
                 'total_tasks': stats['total_tasks'],
                 'merged': stats['merged'],
                 'open': stats['open'],
+                'closed': stats['closed'],
                 'rework': stats['rework'],
                 'complexity_breakdown': {
                     'merged': {
@@ -2393,6 +2438,7 @@ def get_filtered_interface_metrics(
         total_tasks = sum(i['total_tasks'] for i in interfaces)
         total_merged = sum(i['merged'] for i in interfaces)
         total_open = sum(i['open'] for i in interfaces)
+        total_closed = sum(i['closed'] for i in interfaces)
         total_rework = sum(i['rework'] for i in interfaces)
         
         summary_merged_complexity = {
@@ -2412,6 +2458,7 @@ def get_filtered_interface_metrics(
                 'total_tasks': total_tasks,
                 'total_merged': total_merged,
                 'total_open': total_open,
+                'total_closed': total_closed,
                 'total_rework': total_rework,
                 'statuses': status_counts,
                 'complexity_breakdown': {
@@ -2790,10 +2837,12 @@ async def get_task_similarity(
         from database import TaskSimilarity
         import numpy as np
         
-        # Base query for merged PRs with instructions
+        # Base query for merged PRs with instructions (exclude reverted PRs, only initial submissions)
         query = db.query(PullRequest).filter(
             PullRequest.domain == domain,
             PullRequest.merged == True,
+            PullRequest.is_reverted.isnot(True),  # Exclude reverted PRs (NULL = not reverted)
+            PullRequest.is_initial_submission == True,  # Only count unique tasks (not rework)
             PullRequest.instruction_text != None,
             PullRequest.instruction_text != ''
         )
@@ -2885,14 +2934,28 @@ async def get_task_similarity(
                 
                 most_similar = {
                     "pr_number": max_pr.number if max_pr else None,
+                    "pr_title": max_pr.title if max_pr else None,
                     "similarity": float(max_score),
-                    "instruction": max_pr.instruction_text[:100] + "..." if max_pr and max_pr.instruction_text else None
+                    "instruction": max_pr.instruction_text if max_pr else None,
+                    "instruction_preview": max_pr.instruction_text[:100] + "..." if max_pr and max_pr.instruction_text else None,
+                    "task_folder_path": max_pr.task_folder_path if max_pr else None,
+                    "difficulty": max_pr.actual_difficulty if max_pr else None,
+                    "trainer_name": max_pr.trainer_name if max_pr else None,
+                    "week_num": max_pr.week_num if max_pr else None,
+                    "interface_num": max_pr.interface_num if max_pr else None
                 } if max_pr else None
                 
                 least_similar = {
                     "pr_number": min_pr.number if min_pr else None,
+                    "pr_title": min_pr.title if min_pr else None,
                     "similarity": float(min_score),
-                    "instruction": min_pr.instruction_text[:100] + "..." if min_pr and min_pr.instruction_text else None
+                    "instruction": min_pr.instruction_text if min_pr else None,
+                    "instruction_preview": min_pr.instruction_text[:100] + "..." if min_pr and min_pr.instruction_text else None,
+                    "task_folder_path": min_pr.task_folder_path if min_pr else None,
+                    "difficulty": min_pr.actual_difficulty if min_pr else None,
+                    "trainer_name": min_pr.trainer_name if min_pr else None,
+                    "week_num": min_pr.week_num if min_pr else None,
+                    "interface_num": min_pr.interface_num if min_pr else None
                 } if min_pr else None
             else:
                 avg_sim = None
@@ -2902,6 +2965,7 @@ async def get_task_similarity(
             result.append({
                 "pr_number": task.number,
                 "pr_title": task.title,
+                "task_folder_path": task.task_folder_path,
                 "instruction": task.instruction_text,
                 "instruction_preview": task.instruction_text[:150] + "..." if task.instruction_text and len(task.instruction_text) > 150 else task.instruction_text,
                 "difficulty": task.actual_difficulty,
@@ -2942,6 +3006,208 @@ async def get_task_similarity(
     except Exception as e:
         logger.error(f"Error getting task similarity: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/action-similarity/{domain}")
+async def get_action_similarity(
+    domain: str,
+    week: Optional[int] = None,
+    interface: Optional[int] = None,
+    complexity: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get action-based similarity data for a domain
+    Returns tasks with their action similarity scores based on tool calls and parameters
+    """
+    try:
+        from sqlalchemy import or_
+        from database import ActionSimilarity, ActionEmbedding
+        import numpy as np
+        
+        # Base query for merged PRs with action embeddings (exclude reverted PRs, only initial submissions)
+        query = db.query(PullRequest).join(
+            ActionEmbedding, PullRequest.id == ActionEmbedding.pr_id
+        ).filter(
+            PullRequest.domain == domain,
+            PullRequest.merged == True,
+            PullRequest.is_reverted.isnot(True),
+            PullRequest.is_initial_submission == True  # Only count unique tasks (not rework)
+        )
+        
+        # Apply filters
+        if week:
+            query = query.filter(PullRequest.week_num == week)
+        if interface:
+            query = query.filter(PullRequest.interface_num == interface)
+        if complexity:
+            query = query.filter(PullRequest.actual_difficulty == complexity)
+        
+        tasks = query.all()
+        
+        if not tasks:
+            return {
+                "domain": domain,
+                "tasks": [],
+                "count": 0,
+                "filters": {
+                    "week": week,
+                    "interface": interface,
+                    "complexity": complexity
+                }
+            }
+        
+        # Performance optimization: Bulk fetch all similarities in ONE query
+        task_ids = [task.id for task in tasks]
+        all_similarities = db.query(ActionSimilarity).filter(
+            or_(
+                ActionSimilarity.pr_id_1.in_(task_ids),
+                ActionSimilarity.pr_id_2.in_(task_ids)
+            )
+        ).all()
+        
+        # Build a map of task_id -> list of similarities
+        similarity_map = {}
+        all_related_pr_ids = set()
+        for sim in all_similarities:
+            if sim.pr_id_1 in task_ids:
+                if sim.pr_id_1 not in similarity_map:
+                    similarity_map[sim.pr_id_1] = []
+                similarity_map[sim.pr_id_1].append(sim)
+                all_related_pr_ids.add(sim.pr_id_2)
+            if sim.pr_id_2 in task_ids:
+                if sim.pr_id_2 not in similarity_map:
+                    similarity_map[sim.pr_id_2] = []
+                similarity_map[sim.pr_id_2].append(sim)
+                all_related_pr_ids.add(sim.pr_id_1)
+        
+        # Bulk fetch all related PRs and action embeddings in ONE query each
+        related_prs = db.query(PullRequest).filter(
+            PullRequest.id.in_(all_related_pr_ids)
+        ).all()
+        pr_map = {pr.id: pr for pr in related_prs}
+        
+        # Fetch action embeddings for additional info
+        action_embeddings = db.query(ActionEmbedding).filter(
+            ActionEmbedding.pr_id.in_(task_ids)
+        ).all()
+        action_emb_map = {ae.pr_id: ae for ae in action_embeddings}
+        
+        # Now build results using the pre-fetched data (optimized single-pass)
+        result = []
+        for task in tasks:
+            similarities = similarity_map.get(task.id, [])
+            action_emb = action_emb_map.get(task.id)
+            
+            if similarities:
+                # Single-pass calculation: avg, max, min in one loop
+                total_score = 0.0
+                max_sim_obj = similarities[0]
+                min_sim_obj = similarities[0]
+                max_score = similarities[0].similarity_score
+                min_score = similarities[0].similarity_score
+                
+                for sim in similarities:
+                    score = sim.similarity_score
+                    total_score += score
+                    if score > max_score:
+                        max_score = score
+                        max_sim_obj = sim
+                    if score < min_score:
+                        min_score = score
+                        min_sim_obj = sim
+                
+                avg_sim = total_score / len(similarities)
+                
+                # Get the other PR for max/min
+                max_pr_id = max_sim_obj.pr_id_2 if max_sim_obj.pr_id_1 == task.id else max_sim_obj.pr_id_1
+                min_pr_id = min_sim_obj.pr_id_2 if min_sim_obj.pr_id_1 == task.id else min_sim_obj.pr_id_1
+                
+                max_pr = pr_map.get(max_pr_id)
+                min_pr = pr_map.get(min_pr_id)
+                
+                # Get action embeddings for max/min PRs
+                max_action_emb = action_emb_map.get(max_pr_id) if max_pr_id in task_ids else db.query(ActionEmbedding).filter(ActionEmbedding.pr_id == max_pr_id).first()
+                min_action_emb = action_emb_map.get(min_pr_id) if min_pr_id in task_ids else db.query(ActionEmbedding).filter(ActionEmbedding.pr_id == min_pr_id).first()
+                
+                most_similar = {
+                    "pr_number": max_pr.number if max_pr else None,
+                    "pr_title": max_pr.title if max_pr else None,
+                    "similarity": float(max_score),
+                    "tool_count": max_action_emb.tool_count if max_action_emb else None,
+                    "unique_tools": max_action_emb.unique_tools if max_action_emb else [],
+                    "action_sequence_preview": max_action_emb.action_sequence[:200] + "..." if max_action_emb and max_action_emb.action_sequence else None,
+                    "task_folder_path": max_pr.task_folder_path if max_pr else None,
+                    "difficulty": max_pr.actual_difficulty if max_pr else None,
+                    "trainer_name": max_pr.trainer_name if max_pr else None,
+                    "week_num": max_pr.week_num if max_pr else None,
+                    "interface_num": max_pr.interface_num if max_pr else None
+                } if max_pr else None
+                
+                least_similar = {
+                    "pr_number": min_pr.number if min_pr else None,
+                    "pr_title": min_pr.title if min_pr else None,
+                    "similarity": float(min_score),
+                    "tool_count": min_action_emb.tool_count if min_action_emb else None,
+                    "unique_tools": min_action_emb.unique_tools if min_action_emb else [],
+                    "action_sequence_preview": min_action_emb.action_sequence[:200] + "..." if min_action_emb and min_action_emb.action_sequence else None,
+                    "task_folder_path": min_pr.task_folder_path if min_pr else None,
+                    "difficulty": min_pr.actual_difficulty if min_pr else None,
+                    "trainer_name": min_pr.trainer_name if min_pr else None,
+                    "week_num": min_pr.week_num if min_pr else None,
+                    "interface_num": min_pr.interface_num if min_pr else None
+                } if min_pr else None
+            else:
+                avg_sim = None
+                most_similar = None
+                least_similar = None
+            
+            result.append({
+                "pr_number": task.number,
+                "pr_title": task.title,
+                "task_folder_path": task.task_folder_path,
+                "tool_count": action_emb.tool_count if action_emb else 0,
+                "unique_tools": action_emb.unique_tools if action_emb else [],
+                "action_sequence_preview": action_emb.action_sequence[:200] + "..." if action_emb and action_emb.action_sequence else None,
+                "difficulty": task.actual_difficulty,
+                "complexity_label": task.complexity,
+                "pass_count": task.pass_count,
+                "fail_count": task.fail_count,
+                "total_trials": task.total_trials,
+                "week_num": task.week_num,
+                "interface_num": task.interface_num,
+                "pod_name": task.pod_name,
+                "trainer_name": task.trainer_name,
+                "merged_at": task.merged_at.isoformat() if task.merged_at else None,
+                "avg_similarity": float(avg_sim) if avg_sim else None,
+                "most_similar": most_similar,
+                "least_similar": least_similar,
+                "similarity_count": len(similarities) if similarities else 0
+            })
+        
+        # Sort by average similarity (descending) by default
+        result.sort(key=lambda x: x["avg_similarity"] if x["avg_similarity"] is not None else -1, reverse=True)
+        
+        # Extract GitHub repo URL base
+        github_repo_parts = settings.github_repo.split("/")
+        github_url_base = f"https://github.com/{'/'.join(github_repo_parts)}"
+        
+        return {
+            "domain": domain,
+            "tasks": result,
+            "count": len(result),
+            "github_url_base": github_url_base,
+            "filters": {
+                "week": week,
+                "interface": interface,
+                "complexity": complexity
+            }
+        }
+    
+    except Exception as e:
+        logger.error(f"Error getting action similarity: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
