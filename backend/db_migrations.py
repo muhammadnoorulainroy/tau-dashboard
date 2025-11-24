@@ -937,6 +937,109 @@ def add_pr_folder_tracking_columns():
         logger.error(f" Error adding folder tracking columns: {e}")
         return False
 
+def create_action_embedding_table():
+    """
+    Create action_embeddings table for caching action sequence embeddings
+    """
+    try:
+        logger.info("Checking for action_embeddings table...")
+        
+        with engine.connect() as connection:
+            # Check if table exists
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'action_embeddings'
+                )
+            """))
+            table_exists = result.scalar()
+            
+            if not table_exists:
+                logger.info("Creating action_embeddings table...")
+                connection.execute(text("""
+                    CREATE TABLE action_embeddings (
+                        id SERIAL PRIMARY KEY,
+                        pr_id INTEGER UNIQUE NOT NULL REFERENCES pull_requests(id),
+                        embedding FLOAT[],
+                        action_sequence TEXT,
+                        tool_count INTEGER DEFAULT 0,
+                        unique_tools JSON DEFAULT '[]'::json,
+                        model_name VARCHAR DEFAULT 'all-MiniLM-L6-v2',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                
+                # Create indices
+                connection.execute(text(
+                    "CREATE INDEX idx_action_embeddings_pr_id ON action_embeddings(pr_id)"
+                ))
+                
+                connection.commit()
+                logger.info(" Created action_embeddings table")
+            else:
+                logger.info(" action_embeddings table already exists")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error creating action_embeddings table: {e}")
+        return False
+
+
+def create_action_similarity_table():
+    """
+    Create action_similarities table for storing pairwise action-based similarities
+    """
+    try:
+        logger.info("Checking for action_similarities table...")
+        
+        with engine.connect() as connection:
+            # Check if table exists
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'action_similarities'
+                )
+            """))
+            table_exists = result.scalar()
+            
+            if not table_exists:
+                logger.info("Creating action_similarities table...")
+                connection.execute(text("""
+                    CREATE TABLE action_similarities (
+                        id SERIAL PRIMARY KEY,
+                        domain VARCHAR NOT NULL,
+                        pr_id_1 INTEGER NOT NULL REFERENCES pull_requests(id),
+                        pr_id_2 INTEGER NOT NULL REFERENCES pull_requests(id),
+                        similarity_score FLOAT NOT NULL,
+                        calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT uq_action_pr_pair UNIQUE (pr_id_1, pr_id_2)
+                    )
+                """))
+                
+                # Create indices
+                connection.execute(text(
+                    "CREATE INDEX idx_action_domain_prs ON action_similarities(domain, pr_id_1, pr_id_2)"
+                ))
+                connection.execute(text(
+                    "CREATE INDEX idx_action_pr1 ON action_similarities(pr_id_1)"
+                ))
+                connection.execute(text(
+                    "CREATE INDEX idx_action_pr2 ON action_similarities(pr_id_2)"
+                ))
+                
+                connection.commit()
+                logger.info(" Created action_similarities table")
+            else:
+                logger.info(" action_similarities table already exists")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error creating action_similarities table: {e}")
+        return False
+
+
 def run_migrations():
     """
     Run all database migrations
@@ -1001,6 +1104,10 @@ def run_migrations():
     # Create task_embeddings and task_similarities tables
     create_task_embedding_table()
     create_task_similarity_table()
+    
+    # Create action_embeddings and action_similarities tables
+    create_action_embedding_table()
+    create_action_similarity_table()
     
     # Add folder tracking columns for revert/rework detection
     add_pr_folder_tracking_columns()

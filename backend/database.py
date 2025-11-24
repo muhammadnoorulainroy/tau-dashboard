@@ -467,6 +467,45 @@ class TaskSimilarity(Base):
     )
 
 
+class ActionEmbedding(Base):
+    """
+    Stores embeddings for task action sequences (tool calls and parameters)
+    Used for action-based similarity calculations
+    """
+    __tablename__ = "action_embeddings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    pr_id = Column(Integer, ForeignKey("pull_requests.id"), unique=True, nullable=False, index=True)
+    embedding = Column(ARRAY(Float), nullable=False)  # ~384 dimensions for all-MiniLM-L6-v2
+    action_sequence = Column(Text, nullable=True)  # Serialized action sequence for reference
+    tool_count = Column(Integer, default=0)  # Number of tool calls
+    unique_tools = Column(JSON, default=list)  # List of unique tool names used
+    model_name = Column(String, default="all-MiniLM-L6-v2")
+    created_at = Column(DateTime, default=func.now())
+
+
+class ActionSimilarity(Base):
+    """
+    Stores pairwise cosine similarity scores between task action sequences
+    Calculated and cached to avoid recomputation
+    """
+    __tablename__ = "action_similarities"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    domain = Column(String, index=True, nullable=False)
+    pr_id_1 = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
+    pr_id_2 = Column(Integer, ForeignKey("pull_requests.id"), nullable=False)
+    similarity_score = Column(Float, nullable=False)
+    calculated_at = Column(DateTime, default=func.now())
+    
+    __table_args__ = (
+        Index('idx_action_domain_prs', 'domain', 'pr_id_1', 'pr_id_2'),
+        Index('idx_action_pr1', 'pr_id_1'),
+        Index('idx_action_pr2', 'pr_id_2'),
+        UniqueConstraint('pr_id_1', 'pr_id_2', name='uq_action_pr_pair'),
+    )
+
+
 def get_db():
     db = SessionLocal()
     try:

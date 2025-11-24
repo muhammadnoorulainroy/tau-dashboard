@@ -22,7 +22,7 @@ env_path = backend_dir / '.env'
 if env_path.exists():
     load_dotenv(env_path)
 
-from database import SessionLocal, PullRequest
+from database import SessionLocal, PullRequest, ActionEmbedding
 from github_service import GitHubService
 from config import settings
 
@@ -126,13 +126,109 @@ def run_full_sync(days: int = None):
         github_service.update_interface_metrics(db)
         logger.info("Metrics recalculated successfully")
         
+        # Generate action embeddings and calculate similarities
+        logger.info("")
+        logger.info("="*80)
+        logger.info("Generating action embeddings and calculating similarities...")
+        logger.info("="*80)
+        logger.info("")
+        
+        embeddings_created = 0
+        total_similarities = 0
+        
+        try:
+            from action_similarity_service import ActionSimilarityService
+            action_service = ActionSimilarityService()
+            
+            # Get all merged PRs without action embeddings
+            logger.info("Finding PRs that need action embeddings...")
+            prs_without_embeddings = db.query(PullRequest).outerjoin(
+                ActionEmbedding, PullRequest.id == ActionEmbedding.pr_id
+            ).filter(
+                PullRequest.merged == True,
+                PullRequest.is_reverted.isnot(True),
+                ActionEmbedding.id == None  # No embedding exists
+            ).all()
+            
+            logger.info(f"Found {len(prs_without_embeddings)} PRs without action embeddings")
+            
+            # Generate embeddings
+            embeddings_created = 0
+            for pr in prs_without_embeddings:
+                try:
+                    embedding = action_service.get_or_create_embedding(pr, db)
+                    if embedding:
+                        embeddings_created += 1
+                        if embeddings_created % 10 == 0:
+                            logger.info(f"  Generated {embeddings_created}/{len(prs_without_embeddings)} embeddings...")
+                except Exception as e:
+                    logger.warning(f"  Failed to generate embedding for PR #{pr.number}: {e}")
+            
+            logger.info(f"Generated {embeddings_created} action embeddings")
+            
+            # Calculate similarities for each domain
+            logger.info("")
+            logger.info("Calculating action similarities by domain...")
+            
+            # Get distinct domains with action embeddings
+            domains = db.query(PullRequest.domain).join(
+                ActionEmbedding, PullRequest.id == ActionEmbedding.pr_id
+            ).filter(
+                PullRequest.merged == True,
+                PullRequest.is_reverted.isnot(True)
+            ).distinct().all()
+            
+            total_similarities = 0
+            for (domain,) in domains:
+                if not domain:
+                    continue
+                logger.info(f"  Processing domain: {domain}")
+                similarity_count = action_service.calculate_similarity_for_domain(domain, db)
+                total_similarities += similarity_count
+                logger.info(f"    Calculated {similarity_count} similarity pairs")
+            
+            logger.info(f"Total action similarities calculated: {total_similarities}")
+            
+        except Exception as e:
+            logger.error(f"Error generating action similarities: {e}", exc_info=True)
+            logger.warning("Action similarity generation failed, but sync completed successfully")
+        
+        # Get actual database totals for summary
+        total_merged = db.query(PullRequest).filter(
+            PullRequest.merged == True,
+            PullRequest.is_reverted.isnot(True)
+        ).count()
+        
+        total_initial = db.query(PullRequest).filter(
+            PullRequest.merged == True,
+            PullRequest.is_reverted.isnot(True),
+            PullRequest.is_initial_submission == True
+        ).count()
+        
+        total_rework = db.query(PullRequest).filter(
+            PullRequest.merged == True,
+            PullRequest.is_reverted.isnot(True),
+            PullRequest.is_initial_submission == False
+        ).count()
+        
+        total_reverted = db.query(PullRequest).filter(
+            PullRequest.is_reverted == True
+        ).count()
+        
         logger.info("")
         logger.info("="*80)
         logger.info(f"FULL SYNC COMPLETED")
-        logger.info(f"   Total PRs synced: {synced_count}")
-        logger.info(f"   Reverted PRs: {reverted_count}")
-        logger.info(f"   Initial submissions: {initial_count}")
-        logger.info(f"   Rework PRs: {synced_count - initial_count - reverted_count}")
+        logger.info(f"   PRs synced this run: {synced_count}")
+        logger.info(f"   PRs marked reverted this run: {reverted_count}")
+        logger.info(f"   PRs marked initial this run: {initial_count}")
+        logger.info("")
+        logger.info(f"DATABASE TOTALS:")
+        logger.info(f"   Total merged tasks (unique): {total_initial}")
+        logger.info(f"   Total rework PRs: {total_rework}")
+        logger.info(f"   Total reverted PRs: {total_reverted}")
+        logger.info(f"   Total merged (non-reverted): {total_merged}")
+        logger.info(f"   Action embeddings generated: {embeddings_created}")
+        logger.info(f"   Action similarities calculated: {total_similarities}")
         logger.info("="*80)
         
         return synced_count

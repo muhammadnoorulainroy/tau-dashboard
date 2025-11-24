@@ -76,15 +76,35 @@ class GitHubService:
             }
         
         # Try alternative pattern for backward compatibility
-        alt_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)?-?(expert|hard|medium)?-?(\d{10,})$')
+        # This handles malformed titles like: rajeswaran.v-confluence_wiki-3_medium-1763451789
+        alt_pattern = re.compile(r'^([a-zA-Z0-9\._-]+?)-([\w_-]+)-(\d+)?[_-]?(expert|hard|medium)?[_-]?(\d{10,})$')
         match = alt_pattern.match(title)
         if match:
+            trainer_name = match.group(1)
+            domain = match.group(2)
+            interface_num = int(match.group(3)) if match.group(3) else 0
+            complexity = match.group(4) if match.group(4) else 'unknown'
+            timestamp = match.group(5)
+            
+            # For alternative pattern, check if extracted domain is valid
+            # If not, try to find a valid domain within the captured text
+            domain_normalized = domain.replace('-', '_')
+            if domain_normalized not in self.valid_domains:
+                # Domain might be over-captured (e.g., "confluence_wiki-3_medium")
+                # Try to match against valid domains
+                for valid_domain in self.valid_domains:
+                    if valid_domain in domain_normalized or valid_domain.replace('_', '-') in domain:
+                        domain = valid_domain
+                        break
+            else:
+                domain = domain_normalized
+            
             return {
-                'trainer_name': match.group(1),
-                'domain': match.group(2),
-                'interface_num': int(match.group(3)) if match.group(3) else 0,
-                'complexity': match.group(4) if match.group(4) else 'unknown',
-                'timestamp': match.group(5)
+                'trainer_name': trainer_name,
+                'domain': domain,
+                'interface_num': interface_num,
+                'complexity': complexity,
+                'timestamp': timestamp
             }
         
         return None
@@ -393,19 +413,40 @@ class GitHubService:
     def mark_reverted_prs(self, db: Session) -> int:
         """
         Mark PRs as reverted if their task folders no longer exist on main branch.
+        Handles folder renames (e.g., difficulty changes) by checking timestamp.
         Returns the number of PRs marked as reverted.
         """
         logger.info("Starting revert detection...")
         
-        # Get folder existence map
-        folder_existence = self.verify_folders_exist_on_main(db)
-        
-        if not folder_existence:
-            logger.warning("No folder existence data retrieved, skipping revert marking")
+        # Get the repository tree (ONE API call)
+        try:
+            tree = self.repo.get_git_tree("main", recursive=True)
+            
+            # Build maps: path -> exists, timestamp -> current_path
+            existing_folders = set()
+            folders_by_timestamp = {}
+            
+            for item in tree.tree:
+                if item.type == "tree":
+                    existing_folders.add(item.path)
+                    
+                    # Extract timestamp from folder path
+                    timestamp_match = re.search(r'-(\d{10,})/?$', item.path)
+                    if timestamp_match:
+                        timestamp = timestamp_match.group(1)
+                        # Map timestamp to current path (for rename detection)
+                        folders_by_timestamp[timestamp] = item.path
+            
+            logger.info(f"Found {len(existing_folders)} folders on main branch")
+            
+        except Exception as e:
+            logger.error(f"Error fetching repository tree: {e}")
             return 0
         
         # Mark PRs as reverted
         reverted_count = 0
+        renamed_count = 0
+        restored_count = 0
         now = datetime.now(timezone.utc)
         
         for pr in db.query(PullRequest).filter(
@@ -413,83 +454,158 @@ class GitHubService:
             PullRequest.task_folder_path.isnot(None),
             PullRequest.task_folder_path != ''
         ).all():
-            folder_exists = folder_existence.get(pr.task_folder_path, True)
+            old_path = pr.task_folder_path
+            folder_exists = old_path in existing_folders
             
-            if not folder_exists and not pr.is_reverted:
-                # Folder missing and not already marked as reverted
-                pr.is_reverted = True
-                pr.revert_detected_at = now
-                reverted_count += 1
-                logger.info(f"PR #{pr.number}: Marked as reverted (folder missing: {pr.task_folder_path})")
+            if not folder_exists:
+                # Exact path doesn't exist - check if it's a rename or true revert
+                timestamp_match = re.search(r'-(\d{10,})/?$', old_path)
+                
+                if timestamp_match:
+                    timestamp = timestamp_match.group(1)
+                    current_path = folders_by_timestamp.get(timestamp)
+                    
+                    if current_path and current_path != old_path:
+                        # FOLDER RENAMED (e.g., difficulty changed)
+                        logger.info(f"PR #{pr.number}: Folder renamed: {old_path} -> {current_path}")
+                        pr.task_folder_path = current_path
+                        
+                        # Unmark as reverted if it was marked
+                        if pr.is_reverted:
+                            pr.is_reverted = False
+                            pr.revert_detected_at = None
+                            restored_count += 1
+                        
+                        renamed_count += 1
+                    else:
+                        # TRUE REVERT - folder with this timestamp no longer exists
+                        if not pr.is_reverted:
+                            pr.is_reverted = True
+                            pr.revert_detected_at = now
+                            reverted_count += 1
+                            logger.info(f"PR #{pr.number}: Marked as reverted (folder missing: {old_path})")
+                else:
+                    # No timestamp - mark as reverted if not already
+                    if not pr.is_reverted:
+                        pr.is_reverted = True
+                        pr.revert_detected_at = now
+                        reverted_count += 1
+                        logger.info(f"PR #{pr.number}: Marked as reverted (folder missing: {old_path})")
             
             elif folder_exists and pr.is_reverted:
-                # Folder exists but was previously marked as reverted (maybe restored?)
+                # Folder exists but was previously marked as reverted (restored?)
                 pr.is_reverted = False
                 pr.revert_detected_at = None
-                logger.info(f"PR #{pr.number}: Unmarked as reverted (folder restored: {pr.task_folder_path})")
+                restored_count += 1
+                logger.info(f"PR #{pr.number}: Unmarked as reverted (folder restored: {old_path})")
         
         db.commit()
-        logger.info(f"Revert detection complete: {reverted_count} PRs marked as reverted")
+        logger.info(f"Revert detection complete: {reverted_count} newly reverted, {renamed_count} renamed, {restored_count} restored")
         
         return reverted_count
     
     def mark_initial_submissions(self, db: Session) -> int:
         """
-        Mark PRs as initial submissions if they are the first merged PR for their task folder.
+        Mark PRs as initial submissions if they are the first PR for their task timestamp.
         This helps distinguish between:
         - Initial submission (new task) → is_initial_submission = True
         - Rework/update (updating existing task) → is_initial_submission = False
         
         Logic:
-        - Group PRs by task_folder_path
-        - For each group, the PR with earliest merged_at timestamp is marked as initial
+        - Extract timestamp from task_folder_path (format: ...domain-interface-complexity-TIMESTAMP)
+        - Group PRs by timestamp (handles case where same task appears in different folders)
+        - For each group, the PR with earliest created_at is marked as initial
         - All others are rework/updates
+        - Works for ALL PR states (merged, open, closed)
         
         Returns the number of PRs marked as initial submissions.
         """
         logger.info("Starting initial submission detection...")
         
-        # Get all merged PRs with folder paths
+        # Get ALL PRs with folder paths (not just merged!)
         prs_with_folders = db.query(PullRequest).filter(
-            PullRequest.merged == True,
             PullRequest.task_folder_path.isnot(None),
             PullRequest.task_folder_path != ''
-        ).order_by(PullRequest.task_folder_path, PullRequest.merged_at).all()
+        ).order_by(PullRequest.created_at).all()
         
         if not prs_with_folders:
-            logger.info("No merged PRs with folder paths found")
+            logger.info("No PRs with folder paths found")
             return 0
         
-        # Group PRs by folder path
-        folder_groups = {}
-        for pr in prs_with_folders:
-            if pr.task_folder_path not in folder_groups:
-                folder_groups[pr.task_folder_path] = []
-            folder_groups[pr.task_folder_path].append(pr)
+        # Group PRs by timestamp (extracted from folder path)
+        timestamp_groups = {}
+        prs_without_timestamp = []
         
-        logger.info(f"Found {len(folder_groups)} unique task folders")
+        for pr in prs_with_folders:
+            # Extract timestamp from folder path
+            timestamp_match = re.search(r'-(\d{10,})/?$', pr.task_folder_path)
+            if timestamp_match:
+                timestamp = timestamp_match.group(1)
+                if timestamp not in timestamp_groups:
+                    timestamp_groups[timestamp] = []
+                timestamp_groups[timestamp].append(pr)
+            else:
+                # Folder path doesn't have timestamp - treat as unique
+                prs_without_timestamp.append(pr)
+        
+        logger.info(f"Found {len(timestamp_groups)} unique task folders")
+        if prs_without_timestamp:
+            logger.warning(f"Found {len(prs_without_timestamp)} PRs without timestamp in folder path")
         
         # Mark initial submissions
         initial_count = 0
         rework_count = 0
         
-        for folder_path, prs in folder_groups.items():
-            # Sort by merged_at (earliest first)
-            prs.sort(key=lambda p: p.merged_at if p.merged_at else datetime.max.replace(tzinfo=timezone.utc))
+        # Process timestamp groups
+        for timestamp, prs in timestamp_groups.items():
+            # Group PRs by state (merged vs non-merged) to handle independently
+            merged_prs = [pr for pr in prs if pr.merged]
+            non_merged_prs = [pr for pr in prs if not pr.merged]
             
-            # First PR is the initial submission
-            first_pr = prs[0]
-            if not first_pr.is_initial_submission:
-                first_pr.is_initial_submission = True
-                initial_count += 1
-                logger.debug(f"PR #{first_pr.number}: Marked as initial submission for {folder_path}")
+            # Handle merged PRs: First merged PR per timestamp is initial
+            if merged_prs:
+                merged_prs.sort(key=lambda p: p.merged_at if p.merged_at else datetime.max.replace(tzinfo=timezone.utc))
+                first_merged = merged_prs[0]
+                if not first_merged.is_initial_submission:
+                    first_merged.is_initial_submission = True
+                    initial_count += 1
+                    logger.debug(f"PR #{first_merged.number}: Marked as initial submission (merged, timestamp {timestamp})")
+                
+                # All other merged PRs are rework
+                for pr in merged_prs[1:]:
+                    if pr.is_initial_submission:
+                        pr.is_initial_submission = False
+                        rework_count += 1
+                        logger.debug(f"PR #{pr.number}: Marked as rework (merged, timestamp {timestamp})")
             
-            # All others are rework
-            for pr in prs[1:]:
+            # Handle non-merged PRs: First non-merged PR per timestamp is initial
+            if non_merged_prs:
+                non_merged_prs.sort(key=lambda p: p.created_at if p.created_at else datetime.max.replace(tzinfo=timezone.utc))
+                first_non_merged = non_merged_prs[0]
+                if not first_non_merged.is_initial_submission:
+                    first_non_merged.is_initial_submission = True
+                    initial_count += 1
+                    logger.debug(f"PR #{first_non_merged.number}: Marked as initial submission (non-merged, timestamp {timestamp})")
+                
+                # All other non-merged PRs are rework
+                for pr in non_merged_prs[1:]:
+                    if pr.is_initial_submission:
+                        pr.is_initial_submission = False
+                        rework_count += 1
+                        logger.debug(f"PR #{pr.number}: Marked as rework (non-merged, timestamp {timestamp})")
+        
+        # Process PRs without timestamp (treat each as initial if folder path unique)
+        folder_paths_seen = set()
+        for pr in prs_without_timestamp:
+            if pr.task_folder_path not in folder_paths_seen:
+                if not pr.is_initial_submission:
+                    pr.is_initial_submission = True
+                    initial_count += 1
+                folder_paths_seen.add(pr.task_folder_path)
+            else:
                 if pr.is_initial_submission:
                     pr.is_initial_submission = False
                     rework_count += 1
-                    logger.debug(f"PR #{pr.number}: Marked as rework for {folder_path}")
         
         db.commit()
         logger.info(f"Initial submission detection complete: {initial_count} initial, {rework_count} rework PRs updated")
@@ -594,6 +710,84 @@ class GitHubService:
             return "expert"
         else:
             return "unclassified"
+    
+    def _fetch_task_json_for_pr(self, pr: PullRequest) -> Optional[dict]:
+        """
+        Fetch and return task.json data for a PR (without storing it)
+        Used by action similarity service to extract action sequences
+        
+        Returns:
+            Dict containing task.json data, or None if not found
+        """
+        import json
+        from github import GithubException
+        
+        # Check if PR matches naming pattern
+        parsed = self.parse_pr_title(pr.title)
+        if not parsed:
+            return None
+        
+        try:
+            # Get the PR object from GitHub
+            gh_pr = self.repo.get_pull(pr.number)
+            files = gh_pr.get_files()
+            
+            # Extract timestamp
+            timestamp = str(pr.timestamp or pr.title.split('-')[-1])
+            
+            # Find task.json in file changes
+            task_json_path = None
+            for file in files:
+                if timestamp in file.filename and file.filename.endswith('/task.json'):
+                    task_json_path = file.filename
+                    break
+            
+            if not task_json_path:
+                return None
+            
+            # Fetch task.json
+            try:
+                content = self.repo.get_contents(task_json_path, ref="main")
+            except Exception:
+                # If not on main, fetch from merge commit
+                content = self.repo.get_contents(task_json_path, ref=gh_pr.merge_commit_sha)
+            
+            # Try multiple decoding methods
+            task_json = None
+            
+            # Method 1: decoded_content
+            try:
+                if isinstance(content.decoded_content, bytes):
+                    task_json = json.loads(content.decoded_content.decode('utf-8'))
+                elif isinstance(content.decoded_content, str):
+                    task_json = json.loads(content.decoded_content)
+            except:
+                pass
+            
+            # Method 2: base64 from content
+            if task_json is None and hasattr(content, 'content') and content.content:
+                try:
+                    import base64
+                    decoded = base64.b64decode(content.content).decode('utf-8')
+                    task_json = json.loads(decoded)
+                except:
+                    pass
+            
+            # Method 3: git blob
+            if task_json is None:
+                try:
+                    blob = self.repo.get_git_blob(content.sha)
+                    import base64
+                    decoded = base64.b64decode(blob.content).decode('utf-8')
+                    task_json = json.loads(decoded)
+                except:
+                    pass
+            
+            return task_json
+        
+        except Exception as e:
+            logger.debug(f"Error fetching task.json for PR #{pr.number}: {e}")
+            return None
     
     def fetch_and_store_task_data(self, db_pr: PullRequest):
         """Fetch task.json and result.json for merged PRs by looking at PR file changes"""
@@ -1261,16 +1455,39 @@ class GitHubService:
                 skipped_count += 1
         
         # Sync MERGED PRs (sorted by updated date, newest first)
+        # Note: Merged PRs have state='closed' in GitHub, so we fetch closed PRs and filter for merged=True
         logger.info("Syncing merged PRs (newest to oldest)...")
+        logger.info(f"NOTE: This fetches closed PRs and filters for merged ones only")
         logger.info(f"NOTE: Checking merged_at date (not updated_at) to catch all merged PRs")
         
         skipped_by_date = 0
+        # ---- Sync Merged PRs (these show as 'closed' state in GitHub) ----
         checked_count = 0
         
-        for pr in self.repo.get_pulls(state='closed', sort='updated', direction='desc'):
+        logger.info("Fetching closed PRs from GitHub API...")
+        try:
+            closed_prs = self.repo.get_pulls(state='closed', sort='updated', direction='desc')
+        except Exception as e:
+            logger.error(f"Failed to fetch closed PRs: {str(e)}")
+            raise
+        
+        logger.info("Starting to process closed PRs (will only sync MERGED ones)...")
+        for pr in closed_prs:
             checked_count += 1
             
-            # Check if it's actually merged (closed PRs include both merged and just closed)
+            # Log each PR being processed (helps identify where it hangs)
+            if checked_count % 10 == 0:
+                logger.info(f"Progress: Checked {checked_count} closed PRs, synced {synced_count} merged, skipped {skipped_count}...")
+            
+            try:
+                # Log the PR number we're about to process
+                pr_num = pr.number  # This forces fetching PR data from API
+                logger.debug(f"Processing PR #{pr_num}...")
+            except Exception as e:
+                logger.error(f"Failed to fetch PR data (position {checked_count}): {str(e)}")
+                continue
+            
+            # IMPORTANT: Skip closed (non-merged) PRs - we only want MERGED PRs
             if not pr.merged:
                 continue
             
@@ -1294,32 +1511,37 @@ class GitHubService:
                     logger.info(f"Checked {checked_count} PRs, {skipped_by_date} skipped by date (>80%). Stopping.")
                     break
             
-            if self.sync_pull_request(pr, db):
-                synced_count += 1
-                if synced_count % 10 == 0:
-                    db.commit()
-                    logger.info(f"Synced {synced_count} merged PRs...")
-            else:
+            try:
+                if self.sync_pull_request(pr, db):
+                    synced_count += 1
+                    if synced_count % 10 == 0:
+                        db.commit()
+                        logger.info(f"Synced {synced_count} merged PRs...")
+                else:
+                    skipped_count += 1
+            except Exception as e:
+                logger.error(f"Error syncing PR #{pr.number}: {str(e)}")
                 skipped_count += 1
+                continue
         
-        # Sync recently closed (non-merged) PRs
-        logger.info("Syncing closed (non-merged) PRs...")
-        for pr in self.repo.get_pulls(state='closed', sort='updated', direction='desc'):
-            if pr.merged:
-                continue  # Skip merged PRs, already handled above
-            
-            if pr.updated_at < since:
-                break
-            if self.sync_pull_request(pr, db):
-                synced_count += 1
-                if synced_count % 10 == 0:
-                    db.commit()
-                    logger.info(f"Synced {synced_count} PRs...")
-            else:
-                skipped_count += 1
+        # # Sync recently closed (non-merged) PRs
+        # logger.info("Syncing closed (non-merged) PRs...")
+        # for pr in self.repo.get_pulls(state='closed', sort='updated', direction='desc'):
+        #     if pr.merged:
+        #         continue  # Skip merged PRs, already handled above
+        #     
+        #     if pr.updated_at < since:
+        #         break
+        #     if self.sync_pull_request(pr, db):
+        #         synced_count += 1
+        #         if synced_count % 10 == 0:
+        #             db.commit()
+        #             logger.info(f"Synced {synced_count} PRs...")
+        #     else:
+        #         skipped_count += 1
         
         db.commit()
-        logger.info(f"Sync completed: synced {synced_count} PRs (open + merged + closed), skipped {skipped_count}")
+        logger.info(f"Sync completed: synced {synced_count} PRs (open + merged), skipped {skipped_count} (closed non-merged PRs excluded)")
         
         # Update aggregated metrics
         logger.info("Updating aggregated metrics...")
@@ -1355,7 +1577,7 @@ class GitHubService:
             prs = db.query(PullRequest).filter_by(developer_username=dev_username).all()
             dev.total_prs = len(prs)
             dev.open_prs = sum(1 for pr in prs if pr.state == 'open')
-            dev.merged_prs = sum(1 for pr in prs if pr.merged and not pr.is_reverted)  # Exclude reverted PRs
+            dev.merged_prs = sum(1 for pr in prs if pr.merged and not pr.is_reverted and pr.is_initial_submission)  # Count only unique tasks (initial submissions)
             dev.closed_prs = sum(1 for pr in prs if pr.state == 'closed' and not pr.merged)
             dev.total_rework = sum(pr.rework_count for pr in prs)
             dev.total_check_failures = sum(pr.check_failures for pr in prs)
@@ -1482,9 +1704,9 @@ class GitHubService:
             domain_metric.hard_count = 0
             domain_metric.medium_count = 0
             
-            # Count by state and labels (exclude reverted PRs from merged count)
+            # Count by state and labels (count only unique tasks - initial submissions)
             for pr in prs:
-                if pr.merged and not pr.is_reverted:  # Exclude reverted PRs
+                if pr.merged and not pr.is_reverted and pr.is_initial_submission:  # Count only unique tasks
                     domain_metric.merged += 1
                 elif 'ready to merge' in [l.lower() for l in pr.labels]:
                     domain_metric.ready_to_merge += 1
@@ -1602,7 +1824,7 @@ class GitHubService:
                 # Count PR statuses based on labels
                 pr_labels_lower = [l.lower() for l in pr.labels] if pr.labels else []
                 
-                if pr.merged and not pr.is_reverted:  # Exclude reverted PRs
+                if pr.merged and not pr.is_reverted and pr.is_initial_submission:  # Count only unique tasks
                     interface_metric.merged += 1
                     weekly_stats[week_key]['merged'] += 1
                     weekly_stats[week_key]['statuses']['merged'] += 1

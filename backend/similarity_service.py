@@ -85,8 +85,14 @@ class SimilarityService:
             logger.debug(f"Created and cached embedding for PR {pr_id}")
             return embedding_vector
         except Exception as e:
-            logger.error(f"Error storing embedding for PR {pr_id}: {e}")
             db.rollback()
+            
+            # If duplicate key error, the embedding already exists - just return the vector
+            if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
+                logger.debug(f"PR {pr_id}: Instruction embedding already exists in DB")
+                return embedding_vector
+            
+            logger.error(f"Error storing embedding for PR {pr_id}: {e}")
             return embedding_vector  # Return the embedding even if storage failed
     
     def calculate_similarity_for_domain(self, domain: str, db: Session) -> bool:

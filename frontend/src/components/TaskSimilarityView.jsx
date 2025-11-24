@@ -28,12 +28,14 @@ const Tooltip = ({ text, children }) => {
 
 const TaskSimilarityView = ({ lastUpdate }) => {
   const [tasks, setTasks] = useState([]);
+  const [actionTasks, setActionTasks] = useState([]); // Action similarity tasks
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false); // Action similarity loading
   const [expandedRow, setExpandedRow] = useState(null);
   const [githubUrlBase, setGithubUrlBase] = useState('https://github.com');
   
   // Tab state
-  const [activeTab, setActiveTab] = useState('browse'); // 'browse' or 'search'
+  const [activeTab, setActiveTab] = useState('browse'); // 'browse', 'action', or 'search'
   
   // Custom instruction search state
   const [customInstruction, setCustomInstruction] = useState('');
@@ -71,10 +73,20 @@ const TaskSimilarityView = ({ lastUpdate }) => {
   
   useEffect(() => {
     if (activeFilters.domain) {
-      fetchTaskSimilarity();
+      if (activeTab === 'action') {
+        fetchActionSimilarity();
+      } else if (activeTab === 'browse') {
+        fetchTaskSimilarity();
+      }
       setCurrentPage(1); // Reset to first page when filters change
     }
-  }, [activeFilters, lastUpdate]);
+  }, [activeFilters, lastUpdate, activeTab]);
+
+  // Reset sorting when switching tabs
+  useEffect(() => {
+    setSortBy('most_similar');
+    setSortOrder('desc');
+  }, [activeTab]);
 
   const initializeFilters = async () => {
     try {
@@ -139,6 +151,36 @@ const TaskSimilarityView = ({ lastUpdate }) => {
     }
   };
 
+  const fetchActionSimilarity = async () => {
+    if (!activeFilters.domain) return;
+    
+    setActionLoading(true);
+    try {
+      const params = {};
+      if (activeFilters.week) params.week = activeFilters.week;
+      if (activeFilters.interface) params.interface = activeFilters.interface;
+      if (activeFilters.complexity) params.complexity = activeFilters.complexity;
+      
+      const response = await api.get(`/action-similarity/${activeFilters.domain}`, { params });
+      let tasksData = response.data.tasks || [];
+      
+      // Store GitHub URL base from response
+      if (response.data.github_url_base) {
+        setGithubUrlBase(response.data.github_url_base);
+      }
+      
+      // Apply sorting
+      tasksData = sortTasks(tasksData, sortBy, sortOrder);
+      
+      setActionTasks(tasksData);
+    } catch (error) {
+      console.error('Error fetching action similarity:', error);
+      setActionTasks([]);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const sortTasks = (tasksData, field, order) => {
     return [...tasksData].sort((a, b) => {
       let aVal, bVal;
@@ -165,16 +207,22 @@ const TaskSimilarityView = ({ lastUpdate }) => {
   };
 
   const handleSort = (field) => {
+    const newSortOrder = sortBy === field ? (sortOrder === 'asc' ? 'desc' : 'asc') : 'desc';
+    
     if (sortBy === field) {
       // Toggle sort order
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+      setSortOrder(newSortOrder);
     } else {
       setSortBy(field);
-      setSortOrder('desc');
+      setSortOrder(newSortOrder);
     }
     
-    // Re-sort tasks
-    setTasks(sortTasks(tasks, field, sortOrder === 'asc' ? 'desc' : 'asc'));
+    // Re-sort tasks based on active tab
+    if (activeTab === 'action') {
+      setActionTasks(sortTasks(actionTasks, field, newSortOrder));
+    } else {
+      setTasks(sortTasks(tasks, field, newSortOrder));
+    }
   };
 
   const searchSimilarTasks = async () => {
@@ -364,6 +412,13 @@ const TaskSimilarityView = ({ lastUpdate }) => {
   const endIndex = startIndex + itemsPerPage;
   const currentTasks = tasks.slice(startIndex, endIndex);
 
+  // Generic pagination function for any task array
+  const paginatedTasks = (taskArray) => {
+    const start = (currentPage - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+    return taskArray.slice(start, end);
+  };
+
   const goToPage = (page) => {
     setCurrentPage(Math.max(1, Math.min(page, totalPages)));
     setExpandedRow(null); // Collapse any expanded rows when changing pages
@@ -399,9 +454,19 @@ const TaskSimilarityView = ({ lastUpdate }) => {
               activeTab === 'browse'
                 ? 'border-purple-500 text-purple-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-all duration-200 ease-in-out`}
           >
             Browse Similarities
+          </button>
+          <button
+            onClick={() => setActiveTab('action')}
+            className={`${
+              activeTab === 'action'
+                ? 'border-purple-500 text-purple-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-all duration-200 ease-in-out`}
+          >
+            Action Similarity
           </button>
           <button
             onClick={() => setActiveTab('search')}
@@ -409,7 +474,7 @@ const TaskSimilarityView = ({ lastUpdate }) => {
               activeTab === 'search'
                 ? 'border-purple-500 text-purple-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-all duration-200 ease-in-out`}
           >
             Search Custom Instruction
           </button>
@@ -458,7 +523,7 @@ const TaskSimilarityView = ({ lastUpdate }) => {
 
       {/* Browse Tab Content */}
       {activeTab === 'browse' && (
-        <>
+        <div className="animate-fadeIn">
           {/* Filters */}
           <div className="card">
         <div className="flex items-center mb-4">
@@ -853,12 +918,427 @@ const TaskSimilarityView = ({ lastUpdate }) => {
           </div>
         </div>
       )}
-        </>
+        </div>
+      )}
+
+      {/* Action Similarity Tab Content */}
+      {activeTab === 'action' && (
+        <div className="animate-fadeIn">
+          {/* Info Banner */}
+          <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6">
+            <div className="flex items-start">
+              <QuestionMarkCircleIcon className="h-5 w-5 text-purple-600 mt-0.5 mr-3 flex-shrink-0" />
+              <div className="text-sm text-purple-900">
+                <p className="font-semibold mb-1">How Action Similarity Works</p>
+                <p className="mb-2">
+                  Action similarity compares the sequence of tool calls (actions) taken to complete tasks. 
+                  We analyze which tools were used and in what order, helping identify tasks with similar execution patterns.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <span className="font-semibold">Metrics Explained:</span>
+                    <ul className="mt-1 space-y-1 ml-2">
+                      <li>• <span className="font-medium">Total Calls:</span> Total number of tool invocations (including repeats)</li>
+                      <li>• <span className="font-medium">Unique Tools:</span> Number of different tools used</li>
+                      <li className="text-gray-600 italic mt-1">Example: Using read_file 3 times + write_file 2 times = 5 total calls, 2 unique tools</li>
+                    </ul>
+                  </div>
+                  <div>
+                    <span className="font-semibold">Useful For:</span>
+                    <ul className="mt-1 space-y-1 ml-2">
+                      <li>• Finding tasks with similar solution approaches</li>
+                      <li>• Identifying common tool usage patterns</li>
+                      <li>• Comparing execution complexity</li>
+                      <li>• Detecting similar workflows</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="card">
+            <div className="flex items-center mb-4">
+              <FunnelIcon className="h-5 w-5 text-gray-500 mr-2" />
+              <h3 className="text-lg font-semibold text-gray-900">Filters</h3>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              {/* Domain Filter */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Domain</label>
+                <select
+                  value={activeFilters.domain || ''}
+                  onChange={(e) => setActiveFilters({...activeFilters, domain: e.target.value || null})}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="">All Domains</option>
+                  {domains.map(domain => (
+                    <option key={domain.id} value={domain.name}>{domain.name}</option>
+                  ))}
+                </select>
+              </div>
+              
+              {/* Week Filter */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Week</label>
+                <select
+                  value={activeFilters.week || ''}
+                  onChange={(e) => setActiveFilters({...activeFilters, week: e.target.value ? parseInt(e.target.value) : null})}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="">All Weeks</option>
+                  {weeks.map(week => (
+                    <option key={week.id} value={week.week_num}>Week {week.week_num}</option>
+                  ))}
+                </select>
+              </div>
+              
+              {/* Interface Filter */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Interface</label>
+                <select
+                  value={activeFilters.interface || ''}
+                  onChange={(e) => setActiveFilters({...activeFilters, interface: e.target.value ? parseInt(e.target.value) : null})}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="">All Interfaces</option>
+                  {interfaces.map(int => (
+                    <option key={int} value={int}>Interface {int}</option>
+                  ))}
+                </select>
+              </div>
+              
+              {/* Complexity Filter */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Actual Difficulty</label>
+                <select
+                  value={activeFilters.complexity || ''}
+                  onChange={(e) => setActiveFilters({...activeFilters, complexity: e.target.value || null})}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="">All Difficulties</option>
+                  {complexities.map(comp => (
+                    <option key={comp} value={comp}>{comp}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Action Similarity Table */}
+          {actionLoading ? (
+            <div className="flex justify-center items-center h-64">
+              <div className="text-center">
+                <svg className="animate-spin h-8 w-8 text-purple-600 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <p className="text-gray-600">Loading action similarities...</p>
+              </div>
+            </div>
+          ) : actionTasks.length === 0 ? (
+            <div className="card text-center py-12">
+              <p className="text-gray-500">No action similarity data available for the selected filters.</p>
+              <p className="text-sm text-gray-400 mt-2">Try selecting a different domain or removing some filters.</p>
+            </div>
+          ) : (
+            <div className="card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <button onClick={() => handleSort('pr_number')} className="flex items-center hover:text-gray-700">
+                          PR # <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                        </button>
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Task
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Trainer
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <button onClick={() => handleSort('week_num')} className="flex items-center hover:text-gray-700">
+                          Week <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                        </button>
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        <button onClick={() => handleSort('interface_num')} className="flex items-center hover:text-gray-700">
+                          Interface <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                        </button>
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider overflow-visible">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => handleSort('tool_count')} className="flex items-center hover:text-gray-700">
+                            Tool Calls <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                          </button>
+                          <Tooltip text="Total Calls: Number of tool invocations including repeats. Unique Tools: Number of different tools used. Example: read_file called 3 times + write_file called 2 times = 5 total calls, 2 unique tools.">
+                            <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                          </Tooltip>
+                        </div>
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider relative overflow-visible">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => handleSort('most_similar')} className="flex items-center hover:text-gray-700">
+                            Most Similar <ChevronUpDownIcon className="h-4 w-4 ml-1" />
+                          </button>
+                          <Tooltip text="Shows the task with the most similar action sequence/tool usage pattern and the similarity percentage. Click to sort by similarity score.">
+                            <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
+                          </Tooltip>
+                        </div>
+                      </th>
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {paginatedTasks(actionTasks).map((task, index) => (
+                      <React.Fragment key={task.pr_number || index}>
+                        <tr className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <a
+                              href={`${githubUrlBase}/pull/${task.pr_number || 'N/A'}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline"
+                            >
+                              #{task.pr_number || 'N/A'}
+                            </a>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-gray-900">
+                            <div className="max-w-xs">
+                              <div className="truncate font-medium" title={task.pr_title || 'N/A'}>
+                                {task.pr_title || 'N/A'}
+                              </div>
+                              <div className="text-xs text-gray-500 mt-1">
+                                <span className={`px-2 py-0.5 rounded-full ${
+                                  task.difficulty === 'medium' ? 'bg-green-100 text-green-800' :
+                                  task.difficulty === 'hard' ? 'bg-yellow-100 text-yellow-800' :
+                                  task.difficulty === 'expert' ? 'bg-red-100 text-red-800' :
+                                  'bg-gray-100 text-gray-800'
+                                }`}>
+                                  {task.difficulty || 'N/A'}
+                                </span>
+                                <span className="ml-2">
+                                  {task.pass_count || 0}/{task.total_trials || 0} passed
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {task.trainer_name || 'N/A'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {task.week_num || 'N/A'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {task.interface_num || 'N/A'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            <div className="flex flex-col">
+                              <span className="font-semibold">{task.tool_count || 0}</span>
+                              <span className="text-xs text-gray-500">
+                                {task.unique_tools && task.unique_tools.length > 0 
+                                  ? `${task.unique_tools.length} unique`
+                                  : 'N/A'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-sm">
+                            {task.most_similar ? (
+                              <div>
+                                <div className={`font-semibold ${getSimilarityColor(task.most_similar.similarity)}`}>
+                                  {(task.most_similar.similarity * 100).toFixed(1)}%
+                                </div>
+                                <a
+                                  href={`${githubUrlBase}/pull/${task.most_similar.pr_number}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-blue-600 hover:underline"
+                                >
+                                  PR #{task.most_similar.pr_number}
+                                </a>
+                                {task.most_similar.tool_count && (
+                                  <div className="text-xs text-gray-500 mt-1">
+                                    {task.most_similar.tool_count} tools
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400">N/A</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm">
+                            <button
+                              onClick={() => setExpandedRow(expandedRow === task.pr_number ? null : task.pr_number)}
+                              className="text-purple-600 hover:text-purple-800 flex items-center"
+                            >
+                              <ArrowsPointingOutIcon className="h-4 w-4 mr-1" />
+                              {expandedRow === task.pr_number ? 'Hide' : 'View'}
+                            </button>
+                          </td>
+                        </tr>
+                        {expandedRow === task.pr_number && (
+                          <tr>
+                            <td colSpan="8" className="px-6 py-4 bg-gray-50">
+                              <div className="space-y-4">
+                                <div>
+                                  <h4 className="font-semibold text-gray-900 mb-2">Action Context:</h4>
+                                  <p className="text-sm text-gray-700 whitespace-pre-wrap">
+                                    {task.action_context || 'No action context available'}
+                                  </p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div>
+                                    <h4 className="font-semibold text-gray-900 mb-2">Task Details:</h4>
+                                    <div className="space-y-2 text-sm">
+                                      <div>
+                                        <span className="font-medium text-gray-600">PR:</span>{' '}
+                                        <a 
+                                          href={`${githubUrlBase}/pull/${task.pr_number}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-blue-600 hover:underline"
+                                        >
+                                          #{task.pr_number}
+                                        </a>
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-gray-600">Week:</span> {task.week_num || 'N/A'}
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-gray-600">Interface:</span> {task.interface_num || 'N/A'}
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-gray-600">Trainer:</span> {task.trainer_name || 'N/A'}
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-gray-600">Pod:</span> {task.pod_name || 'N/A'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <h4 className="font-semibold text-gray-900 mb-2">Tool Usage:</h4>
+                                    <div className="space-y-2 text-sm">
+                                      <div>
+                                        <span className="font-medium text-gray-600">Total Tool Calls:</span> {task.tool_count || 0}
+                                        <span className="text-xs text-gray-500 ml-1">(including repeats)</span>
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-gray-600">Unique Tools Used:</span> {task.unique_tools?.length || 0}
+                                        <span className="text-xs text-gray-500 ml-1">(different tools)</span>
+                                      </div>
+                                      {task.unique_tools && task.unique_tools.length > 0 && (
+                                        <div>
+                                          <span className="font-medium text-gray-600">Tool List:</span>
+                                          <div className="flex flex-wrap gap-1 mt-1">
+                                            {task.unique_tools.map((tool, idx) => (
+                                              <span key={idx} className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs">
+                                                {tool}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                {task.most_similar && task.most_similar.action_context && (
+                                  <div>
+                                    <h4 className="font-semibold text-gray-900 mb-2">
+                                      Most Similar Action Context ({(task.most_similar.similarity * 100).toFixed(1)}% similar):
+                                    </h4>
+                                    <p className="text-sm text-gray-700 whitespace-pre-wrap bg-white p-3 rounded border border-gray-200">
+                                      {task.most_similar.action_context}
+                                    </p>
+                                    <div className="mt-2 text-sm">
+                                      <a 
+                                        href={`${githubUrlBase}/pull/${task.most_similar.pr_number}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-blue-600 hover:underline"
+                                      >
+                                        View PR #{task.most_similar.pr_number}
+                                      </a>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              {actionTasks.length > itemsPerPage && (
+                <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+                  <div className="flex-1 flex justify-between sm:hidden">
+                    <button
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                      className="btn btn-secondary"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      onClick={() => setCurrentPage(p => Math.min(Math.ceil(actionTasks.length / itemsPerPage), p + 1))}
+                      disabled={currentPage === Math.ceil(actionTasks.length / itemsPerPage)}
+                      className="btn btn-secondary ml-3"
+                    >
+                      Next
+                    </button>
+                  </div>
+                  <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm text-gray-700">
+                        Showing{' '}
+                        <span className="font-medium">{(currentPage - 1) * itemsPerPage + 1}</span>
+                        {' '}to{' '}
+                        <span className="font-medium">
+                          {Math.min(currentPage * itemsPerPage, actionTasks.length)}
+                        </span>
+                        {' '}of{' '}
+                        <span className="font-medium">{actionTasks.length}</span>
+                        {' '}tasks
+                      </p>
+                    </div>
+                    <div>
+                      <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
+                        <button
+                          onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                          disabled={currentPage === 1}
+                          className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          Previous
+                        </button>
+                        <button
+                          onClick={() => setCurrentPage(p => Math.min(Math.ceil(actionTasks.length / itemsPerPage), p + 1))}
+                          disabled={currentPage === Math.ceil(actionTasks.length / itemsPerPage)}
+                          className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          Next
+                        </button>
+                      </nav>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Search Tab Content */}
       {activeTab === 'search' && (
-        <div className="space-y-6">
+        <div className="animate-fadeIn space-y-6">
           {/* Instructions */}
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <div className="flex items-start">

@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     # Allowed/Recognized domains (fallback list - will be dynamically updated from GitHub)
     # These domains will be shown or recognized; others may be grouped as "Others"
     allowed_domains: List[str] = [
+        "confluence_wiki",  # Week 15+ naming (inconsistent with wiki_confluence)
         "enterprise_wiki",
         "finance",
         "fund_finance",
@@ -77,7 +78,7 @@ class Settings(BaseSettings):
         "it_incident_management",
         "smart_home",
         "smart_home_alexa",
-        "wiki_confluence"
+        "wiki_confluence"  # Week 13-14 naming
     ]
     recognized_domains: List[str] = allowed_domains
 
