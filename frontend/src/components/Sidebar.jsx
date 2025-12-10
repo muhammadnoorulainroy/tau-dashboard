@@ -3,23 +3,21 @@ import { NavLink } from 'react-router-dom';
 import {
   HomeIcon,
   UserGroupIcon,
-  ClipboardDocumentCheckIcon,
   FolderIcon,
   DocumentTextIcon,
-  ChartBarIcon,
-  CubeIcon,
-  SparklesIcon
+  SparklesIcon,
+  ArchiveBoxIcon,
+  ChartBarIcon
 } from '@heroicons/react/24/outline';
 
 const navigation = [
   { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
-  { name: 'Interfaces', path: '/interfaces', icon: CubeIcon },
+  { name: 'Tasks', path: '/tasks', icon: DocumentTextIcon },
+  { name: 'Trainers', path: '/trainers', icon: UserGroupIcon },
+  { name: 'Reviewers', path: '/reviewers', icon: ChartBarIcon },
+  { name: 'Environments', path: '/environments', icon: FolderIcon },
+  { name: 'Batches', path: '/batches', icon: ArchiveBoxIcon },
   { name: 'Task Similarity', path: '/task-similarity', icon: SparklesIcon },
-  { name: 'Developers', path: '/developers', icon: UserGroupIcon },
-  { name: 'Reviewers', path: '/reviewers', icon: ClipboardDocumentCheckIcon },
-  { name: 'Domains', path: '/domains', icon: FolderIcon },
-  { name: 'Pull Requests', path: '/pull-requests', icon: DocumentTextIcon },
-  { name: 'Aggregation', path: '/aggregation', icon: ChartBarIcon },
 ];
 
 const Sidebar = ({ isOpen }) => {
@@ -62,8 +60,8 @@ const Sidebar = ({ isOpen }) => {
               <div className="h-8 w-8 rounded-full bg-gradient-to-br from-primary-400 to-primary-600"></div>
             </div>
             <div className="ml-3">
-              <p className="text-sm font-medium text-gray-700">TAU System</p>
-              <p className="text-xs text-gray-500">Version 1.0.0</p>
+              <p className="text-sm font-medium text-gray-700">TAU Dashboard</p>
+              <p className="text-xs text-gray-500">Task Agent v2.0</p>
             </div>
           </div>
         </div>
@@ -73,5 +71,3 @@ const Sidebar = ({ isOpen }) => {
 };
 
 export default Sidebar;
-
-

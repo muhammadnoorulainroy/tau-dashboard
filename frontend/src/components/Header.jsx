@@ -23,8 +23,8 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate, user, onLogout }) => 
   const [showLogoutConfirm, setShowLogoutConfirm] = React.useState(false);
   const [isLoggingOut, setIsLoggingOut] = React.useState(false);
 
-  // Auto-sync interval: 1 hour (3600 seconds)
-  const AUTO_SYNC_INTERVAL_MS = 3600 * 1000; // 1 hour in milliseconds
+  // Auto-sync interval: 10 minutes (600 seconds)
+  const AUTO_SYNC_INTERVAL_MS = 600 * 1000; // 10 minutes in milliseconds
 
   // Calculate remaining time until next auto-sync
   const getRemainingTime = () => {
@@ -190,7 +190,7 @@ const Header = ({ sidebarOpen, setSidebarOpen, lastUpdate, user, onLogout }) => 
                 <div className="absolute right-0 top-full mt-2 w-48 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
                   <div className="flex flex-col space-y-1">
                     <span className="font-medium">{getRemainingTime()}</span>
-                    <span className="text-gray-300">Auto-sync runs every hour</span>
+                    <span className="text-gray-300">Auto-sync runs every 10 minutes</span>
                   </div>
                   {/* Arrow */}
                   <div className="absolute right-2 -top-1 w-2 h-2 bg-gray-900 transform rotate-45"></div>

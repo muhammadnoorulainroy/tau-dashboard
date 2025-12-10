@@ -1,62 +1,68 @@
 import React, { useState, useEffect } from 'react';
-import { getDomainMetrics, getPRStateDistribution } from '../services/api';
+import { getEnvironments } from '../services/api';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
-import { FolderIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
+import { FolderIcon, ChevronRightIcon, CheckCircleIcon, ClockIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 
-const COLORS = {
-  'expert_review_pending': '#f39c12',
-  'calibrator_review_pending': '#e67e22',
-  'expert_approved': '#27ae60',
-  'ready_to_merge': '#2ecc71',
-  'merged': '#229954',
-  'other': '#95a5a6'
+const STATUS_COLORS = {
+  'draft': '#9ca3af',
+  'pending_review': '#f59e0b',
+  'in_expert_review': '#f97316',
+  'pending_calibrator_review': '#8b5cf6',
+  'in_calibrator_review': '#6366f1',
+  'in_pod_lead_review': '#3b82f6',
+  'rework': '#ef4444',
+  'approved': '#22c55e'
+};
+
+const STATUS_LABELS = {
+  'draft': 'Draft',
+  'pending_review': 'Pending Review',
+  'in_expert_review': 'Expert Review',
+  'pending_calibrator_review': 'Pending Calibrator',
+  'in_calibrator_review': 'Calibrator Review',
+  'in_pod_lead_review': 'Pod Lead Review',
+  'rework': 'Rework',
+  'approved': 'Approved'
 };
 
 const DomainView = ({ lastUpdate }) => {
-  const [domains, setDomains] = useState([]);
-  const [selectedDomain, setSelectedDomain] = useState(null);
-  const [domainStats, setDomainStats] = useState(null);
+  const [environments, setEnvironments] = useState([]);
+  const [selectedEnv, setSelectedEnv] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchDomains();
+    fetchEnvironments();
   }, [lastUpdate]);
 
-  useEffect(() => {
-    if (selectedDomain) {
-      fetchDomainStats(selectedDomain);
-    }
-  }, [selectedDomain]);
-
-  const fetchDomains = async () => {
+  const fetchEnvironments = async () => {
     setLoading(true);
     try {
-      const response = await getDomainMetrics();
-      setDomains(response.data);
-      if (response.data.length > 0 && !selectedDomain) {
-        setSelectedDomain(response.data[0].domain);
+      const response = await getEnvironments();
+      // Sort by total_tasks descending
+      const sorted = (response.data || []).sort((a, b) => b.total_tasks - a.total_tasks);
+      setEnvironments(sorted);
+      if (sorted.length > 0 && !selectedEnv) {
+        setSelectedEnv(sorted[0].name);
       }
     } catch (error) {
-      // Error fetching domains
+      console.error('Error fetching environments:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchDomainStats = async (domain) => {
-    try {
-      const response = await getPRStateDistribution(domain);
-      const data = Object.entries(response.data.distribution)
-        .filter(([_, value]) => value > 0)
-        .map(([key, value]) => ({
-          name: key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-          value,
-          color: COLORS[key] || '#95a5a6'
-        }));
-      setDomainStats(data);
-    } catch (error) {
-      // Error fetching domain stats
-    }
+  const getStatusPieData = (env) => {
+    const data = [
+      { name: 'Draft', value: env.draft_count, color: STATUS_COLORS.draft },
+      { name: 'Pending Review', value: env.pending_review_count, color: STATUS_COLORS.pending_review },
+      { name: 'Expert Review', value: env.in_expert_review_count, color: STATUS_COLORS.in_expert_review },
+      { name: 'Pending Calibrator', value: env.pending_calibrator_review_count, color: STATUS_COLORS.pending_calibrator_review },
+      { name: 'Calibrator Review', value: env.in_calibrator_review_count, color: STATUS_COLORS.in_calibrator_review },
+      { name: 'Pod Lead Review', value: env.in_pod_lead_review_count, color: STATUS_COLORS.in_pod_lead_review },
+      { name: 'Rework', value: env.rework_count, color: STATUS_COLORS.rework },
+      { name: 'Approved', value: env.approved_count, color: STATUS_COLORS.approved }
+    ].filter(d => d.value > 0);
+    return data;
   };
 
   if (loading) {
@@ -72,27 +78,27 @@ const DomainView = ({ lastUpdate }) => {
     );
   }
 
-  const selectedDomainData = domains.find(d => d.domain === selectedDomain);
+  const selectedEnvData = environments.find(e => e.name === selectedEnv);
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-bold text-gray-900">Domains</h2>
+        <h2 className="text-3xl font-bold text-gray-900">Environments</h2>
         <div className="flex items-center space-x-4">
           <span className="text-sm text-gray-500">
-            Total: {domains.length} domains
+            Total: {environments.length} environments
           </span>
         </div>
       </div>
 
-      {/* Domain Cards Grid */}
+      {/* Environment Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {domains.map((domain) => (
+        {environments.map((env) => (
           <div 
-            key={domain.id}
-            onClick={() => setSelectedDomain(domain.domain)}
+            key={env.id}
+            onClick={() => setSelectedEnv(env.name)}
             className={`card cursor-pointer transition-all duration-200 ${
-              selectedDomain === domain.domain 
+              selectedEnv === env.name 
                 ? 'ring-2 ring-primary-500 shadow-md' 
                 : 'hover:shadow-md'
             }`}
@@ -101,47 +107,53 @@ const DomainView = ({ lastUpdate }) => {
               <div className="flex items-center">
                 <FolderIcon className="h-5 w-5 text-primary-600 mr-2" />
                 <h3 className="text-lg font-semibold text-gray-900">
-                  {domain.domain}
+                  {env.name.replace(/_/g, ' ')}
                 </h3>
               </div>
               <ChevronRightIcon className="h-5 w-5 text-gray-400" />
             </div>
             
-            <div className="grid grid-cols-2 gap-4 mb-4">
+            <div className="grid grid-cols-3 gap-4 mb-4">
               <div>
-                <p className="text-xs text-gray-500">Total Tasks</p>
-                <p className="text-xl font-bold text-gray-900">{domain.total_tasks}</p>
+                <p className="text-xs text-gray-500">Total</p>
+                <p className="text-xl font-bold text-gray-900">{env.total_tasks}</p>
               </div>
               <div>
-                <p className="text-xs text-gray-500">Merged</p>
-                <p className="text-xl font-bold text-success-600">{domain.merged}</p>
+                <p className="text-xs text-gray-500">Approved</p>
+                <p className="text-xl font-bold text-success-600">{env.approved_count}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Rework</p>
+                <p className="text-xl font-bold text-danger-600">{env.rework_count}</p>
               </div>
             </div>
 
             <div className="space-y-2">
               <div className="flex justify-between items-center">
-                <span className="text-xs text-gray-500">Progress</span>
+                <span className="text-xs text-gray-500">Approval Rate</span>
                 <span className="text-xs font-medium text-gray-700">
-                  {domain.total_tasks > 0 ? ((domain.merged / domain.total_tasks) * 100).toFixed(1) : 0}%
+                  {env.total_tasks > 0 ? ((env.approved_count / env.total_tasks) * 100).toFixed(1) : 0}%
                 </span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div 
-                  className="bg-gradient-to-r from-primary-400 to-primary-600 h-2 rounded-full"
-                  style={{ width: `${domain.total_tasks > 0 ? (domain.merged / domain.total_tasks) * 100 : 0}%` }}
+                  className="bg-gradient-to-r from-success-400 to-success-600 h-2 rounded-full"
+                  style={{ width: `${env.total_tasks > 0 ? (env.approved_count / env.total_tasks) * 100 : 0}%` }}
                 ></div>
               </div>
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
-              {domain.expert_review_pending > 0 && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-warning-100 text-warning-800">
-                  Expert Review: {domain.expert_review_pending}
+              {env.pending_review_count > 0 && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
+                  <ClockIcon className="h-3 w-3 mr-1" />
+                  Review: {env.pending_review_count + env.in_expert_review_count + env.in_pod_lead_review_count}
                 </span>
               )}
-              {domain.ready_to_merge > 0 && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-success-100 text-success-800">
-                  Ready: {domain.ready_to_merge}
+              {env.rework_count > 0 && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+                  <ArrowPathIcon className="h-3 w-3 mr-1" />
+                  Rework: {env.rework_count}
                 </span>
               )}
             </div>
@@ -149,60 +161,58 @@ const DomainView = ({ lastUpdate }) => {
         ))}
       </div>
 
-      {/* Selected Domain Details */}
-      {selectedDomainData && (
+      {/* Selected Environment Details */}
+      {selectedEnvData && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="card">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              {selectedDomain} - Task Distribution
+              {selectedEnv.replace(/_/g, ' ')} - Status Distribution
             </h3>
-            {domainStats && (
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={domainStats}
-                    cx="50%"
-                    cy="50%"
-                    labelLine={false}
-                    label={(entry) => `${entry.value}`}
-                    outerRadius={80}
-                    fill="#8884d8"
-                    dataKey="value"
-                  >
-                    {domainStats.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={getStatusPieData(selectedEnvData)}
+                  cx="50%"
+                  cy="50%"
+                  labelLine={false}
+                  label={(entry) => entry.value > 0 ? entry.value : ''}
+                  outerRadius={80}
+                  fill="#8884d8"
+                  dataKey="value"
+                >
+                  {getStatusPieData(selectedEnvData).map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
           </div>
 
           <div className="card">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              {selectedDomain} - Details
+              {selectedEnv.replace(/_/g, ' ')} - Details
             </h3>
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm text-gray-500">Expert Tasks</p>
-                  <p className="text-2xl font-bold text-gray-900">{selectedDomainData.expert_count}</p>
+                  <p className="text-2xl font-bold text-gray-900">{selectedEnvData.total_expert}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-500">Hard Tasks</p>
-                  <p className="text-2xl font-bold text-gray-900">{selectedDomainData.hard_count}</p>
+                  <p className="text-2xl font-bold text-gray-900">{selectedEnvData.total_hard}</p>
                 </div>
                 <div>
                   <p className="text-sm text-gray-500">Medium Tasks</p>
-                  <p className="text-2xl font-bold text-gray-900">{selectedDomainData.medium_count}</p>
+                  <p className="text-2xl font-bold text-gray-900">{selectedEnvData.total_medium}</p>
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Completion Rate</p>
+                  <p className="text-sm text-gray-500">Approval Rate</p>
                   <p className="text-2xl font-bold text-success-600">
-                    {selectedDomainData.total_tasks > 0 
-                      ? ((selectedDomainData.merged / selectedDomainData.total_tasks) * 100).toFixed(1) 
+                    {selectedEnvData.total_tasks > 0 
+                      ? ((selectedEnvData.approved_count / selectedEnvData.total_tasks) * 100).toFixed(1) 
                       : 0}%
                   </p>
                 </div>
@@ -212,44 +222,82 @@ const DomainView = ({ lastUpdate }) => {
                 <h4 className="text-sm font-medium text-gray-700 mb-2">Status Breakdown</h4>
                 <div className="space-y-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Expert Review Pending</span>
-                    <span className="font-medium">{selectedDomainData.expert_review_pending}</span>
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.draft }}></span>
+                      Draft
+                    </span>
+                    <span className="font-medium">{selectedEnvData.draft_count}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Calibrator Review Pending</span>
-                    <span className="font-medium">{selectedDomainData.calibrator_review_pending}</span>
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.pending_review }}></span>
+                      Pending Review
+                    </span>
+                    <span className="font-medium">{selectedEnvData.pending_review_count}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Expert Approved</span>
-                    <span className="font-medium">{selectedDomainData.expert_approved}</span>
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.in_expert_review }}></span>
+                      Expert Review
+                    </span>
+                    <span className="font-medium">{selectedEnvData.in_expert_review_count}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Ready to Merge</span>
-                    <span className="font-medium">{selectedDomainData.ready_to_merge}</span>
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.pending_calibrator_review }}></span>
+                      Pending Calibrator
+                    </span>
+                    <span className="font-medium">{selectedEnvData.pending_calibrator_review_count}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Merged</span>
-                    <span className="font-medium text-success-600">{selectedDomainData.merged}</span>
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.in_calibrator_review }}></span>
+                      Calibrator Review
+                    </span>
+                    <span className="font-medium">{selectedEnvData.in_calibrator_review_count}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.in_pod_lead_review }}></span>
+                      Pod Lead Review
+                    </span>
+                    <span className="font-medium">{selectedEnvData.in_pod_lead_review_count}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.rework }}></span>
+                      Rework
+                    </span>
+                    <span className="font-medium text-danger-600">{selectedEnvData.rework_count}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600 flex items-center">
+                      <span className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: STATUS_COLORS.approved }}></span>
+                      Approved
+                    </span>
+                    <span className="font-medium text-success-600">{selectedEnvData.approved_count}</span>
                   </div>
                 </div>
               </div>
 
-              {selectedDomainData.detailed_metrics?.developers && (
-                <div className="border-t pt-4">
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Top Contributors</h4>
-                  <div className="space-y-2">
-                    {Object.entries(selectedDomainData.detailed_metrics.developers)
-                      .sort((a, b) => b[1] - a[1])
-                      .slice(0, 5)
-                      .map(([dev, count]) => (
-                        <div key={dev} className="flex justify-between items-center">
-                          <span className="text-sm text-gray-600">{dev}</span>
-                          <span className="font-medium">{count} PRs</span>
-                        </div>
-                      ))}
+              {/* Approved by Difficulty */}
+              <div className="border-t pt-4">
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Approved by Difficulty</h4>
+                <div className="flex gap-4">
+                  <div className="flex-1 text-center p-2 bg-purple-50 rounded">
+                    <p className="text-lg font-bold text-purple-600">{selectedEnvData.approved_expert}</p>
+                    <p className="text-xs text-gray-500">Expert</p>
+                  </div>
+                  <div className="flex-1 text-center p-2 bg-orange-50 rounded">
+                    <p className="text-lg font-bold text-orange-600">{selectedEnvData.approved_hard}</p>
+                    <p className="text-xs text-gray-500">Hard</p>
+                  </div>
+                  <div className="flex-1 text-center p-2 bg-blue-50 rounded">
+                    <p className="text-lg font-bold text-blue-600">{selectedEnvData.approved_medium}</p>
+                    <p className="text-xs text-gray-500">Medium</p>
                   </div>
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </div>
@@ -259,5 +307,3 @@ const DomainView = ({ lastUpdate }) => {
 };
 
 export default DomainView;
-
-

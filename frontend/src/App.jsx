@@ -5,11 +5,10 @@ import { GoogleOAuthProvider } from '@react-oauth/google';
 import Dashboard from './components/Dashboard';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
-import DeveloperView from './components/DeveloperView';
-import ReviewerView from './components/ReviewerView';
+import TrainerView from './components/TrainerView';
 import DomainView from './components/DomainView';
-import PullRequestsView from './components/PullRequestsView';
-import InterfaceView from './components/InterfaceView';
+import TasksView from './components/TasksView';
+import BatchesView from './components/BatchesView';
 import TaskSimilarityView from './components/TaskSimilarityView';
 import AggregationView from './components/AggregationView';
 import Login from './components/Login';
@@ -24,7 +23,7 @@ function MainLayout({ children, sidebarOpen, setSidebarOpen, lastUpdate, user, o
   const location = useLocation();
   
   // Determine if current route should have full page scroll or not
-  const fullScrollRoutes = ['/dashboard', '/domains', '/interfaces', '/task-similarity'];
+  const fullScrollRoutes = ['/dashboard', '/environments', '/task-similarity', '/batches', '/reviewers', '/tasks', '/trainers'];
   const isFullScroll = fullScrollRoutes.includes(location.pathname);
   
   return (
@@ -115,11 +114,11 @@ function App() {
           toast.dismiss('sync-progress');
           
           if (sync_type === 'full') {
-            toast.success(`Full sync complete! Synced ${synced_count} PRs`, {
+            toast.success(`Full sync complete! Synced ${synced_count} tasks`, {
               duration: 4000,
             });
           } else {
-            toast.success(`Sync complete! Updated ${synced_count} PRs`, {
+            toast.success(`Sync complete! Updated ${synced_count} tasks`, {
               duration: 3000,
             });
           }
@@ -188,7 +187,7 @@ function App() {
           ) : (
           // Authenticated - show all protected routes
           <Routes>
-            {/* Protected Routes */}
+            {/* Dashboard */}
             <Route
               path="/dashboard"
               element={
@@ -206,8 +205,9 @@ function App() {
               }
             />
             
+            {/* Tasks */}
             <Route
-              path="/developers"
+              path="/tasks"
               element={
                 <ProtectedRoute isAuthenticated={isAuthenticated}>
                   <MainLayout
@@ -217,12 +217,31 @@ function App() {
                     user={user}
                     onLogout={handleLogout}
                   >
-                    <DeveloperView lastUpdate={lastUpdate} />
+                    <TasksView lastUpdate={lastUpdate} />
                   </MainLayout>
                 </ProtectedRoute>
               }
             />
             
+            {/* Trainers */}
+            <Route
+              path="/trainers"
+              element={
+                <ProtectedRoute isAuthenticated={isAuthenticated}>
+                  <MainLayout
+                    sidebarOpen={sidebarOpen}
+                    setSidebarOpen={setSidebarOpen}
+                    lastUpdate={lastUpdate}
+                    user={user}
+                    onLogout={handleLogout}
+                  >
+                    <TrainerView lastUpdate={lastUpdate} />
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
+            
+            {/* Reviewers - POD Leads, Calibrators, Expert Reviewers */}
             <Route
               path="/reviewers"
               element={
@@ -234,14 +253,15 @@ function App() {
                     user={user}
                     onLogout={handleLogout}
                   >
-                    <ReviewerView lastUpdate={lastUpdate} />
+                    <AggregationView lastUpdate={lastUpdate} />
                   </MainLayout>
                 </ProtectedRoute>
               }
             />
             
+            {/* Environments/Domains */}
             <Route
-              path="/domains"
+              path="/environments"
               element={
                 <ProtectedRoute isAuthenticated={isAuthenticated}>
                   <MainLayout
@@ -257,8 +277,9 @@ function App() {
               }
             />
             
+            {/* Batches */}
             <Route
-              path="/pull-requests"
+              path="/batches"
               element={
                 <ProtectedRoute isAuthenticated={isAuthenticated}>
                   <MainLayout
@@ -268,29 +289,13 @@ function App() {
                     user={user}
                     onLogout={handleLogout}
                   >
-                    <PullRequestsView lastUpdate={lastUpdate} />
+                    <BatchesView lastUpdate={lastUpdate} />
                   </MainLayout>
                 </ProtectedRoute>
               }
             />
             
-            <Route
-              path="/interfaces"
-              element={
-                <ProtectedRoute isAuthenticated={isAuthenticated}>
-                  <MainLayout
-                    sidebarOpen={sidebarOpen}
-                    setSidebarOpen={setSidebarOpen}
-                    lastUpdate={lastUpdate}
-                    user={user}
-                    onLogout={handleLogout}
-                  >
-                    <InterfaceView lastUpdate={lastUpdate} />
-                  </MainLayout>
-                </ProtectedRoute>
-              }
-            />
-            
+            {/* Task Similarity */}
             <Route
               path="/task-similarity"
               element={
@@ -303,23 +308,6 @@ function App() {
                     onLogout={handleLogout}
                   >
                     <TaskSimilarityView lastUpdate={lastUpdate} />
-                  </MainLayout>
-                </ProtectedRoute>
-              }
-            />
-            
-            <Route
-              path="/aggregation"
-              element={
-                <ProtectedRoute isAuthenticated={isAuthenticated}>
-                  <MainLayout
-                    sidebarOpen={sidebarOpen}
-                    setSidebarOpen={setSidebarOpen}
-                    lastUpdate={lastUpdate}
-                    user={user}
-                    onLogout={handleLogout}
-                  >
-                    <AggregationView lastUpdate={lastUpdate} />
                   </MainLayout>
                 </ProtectedRoute>
               }
@@ -345,5 +333,3 @@ function App() {
 }
 
 export default App;
-
-

@@ -2,27 +2,48 @@ import React, { useState, useEffect } from 'react';
 import { 
   getDashboardOverview, 
   getTimelineStats,
-  getPRStateDistribution 
+  getStatusBreakdown 
 } from '../services/api';
 import StatCard from './StatCard';
 import ChartCard from './ChartCard';
-import ActivityFeed from './ActivityFeed';
 import { 
   UserGroupIcon, 
   DocumentTextIcon,
   ArrowPathIcon,
   CheckCircleIcon,
   ClockIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  FolderIcon,
+  ArchiveBoxIcon
 } from '@heroicons/react/24/outline';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-const COLORS = ['#2ecc71', '#f39c12', '#e74c3c', '#f1c40f', '#3498db', '#9b59b6'];
+const STATUS_COLORS = {
+  'draft': '#9ca3af',
+  'pending_review': '#f59e0b',
+  'in_expert_review': '#f97316',
+  'pending_calibrator_review': '#8b5cf6',
+  'in_calibrator_review': '#6366f1',
+  'in_pod_lead_review': '#3b82f6',
+  'rework': '#ef4444',
+  'approved': '#22c55e'
+};
+
+const STATUS_LABELS = {
+  'draft': 'Draft',
+  'pending_review': 'Pending Review',
+  'in_expert_review': 'Expert Review',
+  'pending_calibrator_review': 'Pending Calibrator',
+  'in_calibrator_review': 'Calibrator Review',
+  'in_pod_lead_review': 'Pod Lead Review',
+  'rework': 'Rework',
+  'approved': 'Approved'
+};
 
 const Dashboard = ({ lastUpdate }) => {
   const [overview, setOverview] = useState(null);
   const [timelineData, setTimelineData] = useState(null);
-  const [stateDistribution, setStateDistribution] = useState(null);
+  const [statusBreakdown, setStatusBreakdown] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -32,36 +53,39 @@ const Dashboard = ({ lastUpdate }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [overviewRes, timelineRes, stateRes] = await Promise.all([
+      const [overviewRes, timelineRes, statusRes] = await Promise.all([
         getDashboardOverview(),
         getTimelineStats(30),
-        getPRStateDistribution()
+        getStatusBreakdown()
       ]);
 
       setOverview(overviewRes.data);
       
       // Process timeline data for charts
       const timeline = timelineRes.data;
-      const chartData = timeline.dates.map(date => ({
-        date: date.substring(5), // Show only MM-DD
-        created: timeline.data[date]?.created || 0,
-        merged: timeline.data[date]?.merged || 0,
-        rework: timeline.data[date]?.rework || 0
+      const chartData = timeline.map(item => ({
+        date: item.date.substring(5), // Show only MM-DD
+        created: item.created || 0,
+        approved: item.approved || 0,
+        rework: item.rework || 0
       }));
       setTimelineData(chartData);
 
-      // Process state distribution for pie chart
-      const distribution = stateRes.data.distribution;
-      const pieData = Object.entries(distribution)
-        .filter(([_, value]) => value > 0)
-        .map(([key, value]) => ({
-          name: key.replace(/_/g, ' ').toUpperCase(),
-          value
-        }));
-      setStateDistribution(pieData);
+      // Process status breakdown for pie chart
+      if (statusRes.data && statusRes.data[0]) {
+        const breakdown = statusRes.data[0].breakdown;
+        const pieData = Object.entries(breakdown)
+          .filter(([_, value]) => value > 0)
+          .map(([key, value]) => ({
+            name: STATUS_LABELS[key] || key.replace(/_/g, ' ').toUpperCase(),
+            value,
+            color: STATUS_COLORS[key] || '#6b7280'
+          }));
+        setStatusBreakdown(pieData);
+      }
 
     } catch (error) {
-      // Error fetching dashboard data
+      console.error('Error fetching dashboard data:', error);
     } finally {
       setLoading(false);
     }
@@ -86,82 +110,119 @@ const Dashboard = ({ lastUpdate }) => {
         <div className="flex items-center space-x-2">
           <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-success-100 text-success-800">
             <span className="w-2 h-2 mr-1.5 bg-success-400 rounded-full animate-pulse"></span>
-            Live
+            Task Agent API
           </span>
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Main Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard
-          title="Total PRs"
-          value={overview?.total_prs || 0}
+          title="Total Tasks"
+          value={overview?.total_tasks || 0}
           icon={DocumentTextIcon}
-          trend="+12%"
-          trendUp={true}
           color="primary"
         />
         <StatCard
-          title="Open PRs"
-          value={overview?.open_prs || 0}
+          title="In Review"
+          value={overview?.in_review_count || 0}
           icon={ClockIcon}
-          trend={`${Math.round((overview?.open_prs / overview?.total_prs) * 100)}%`}
+          trend={overview?.total_tasks > 0 ? `${Math.round((overview?.in_review_count / overview?.total_tasks) * 100)}%` : '0%'}
           color="warning"
         />
         <StatCard
-          title="Merged PRs"
-          value={overview?.merged_prs || 0}
+          title="Approved"
+          value={overview?.approved_count || 0}
           icon={CheckCircleIcon}
-          trend={`${Math.round((overview?.merged_prs / overview?.total_prs) * 100)}%`}
+          trend={overview?.total_tasks > 0 ? `${Math.round((overview?.approved_count / overview?.total_tasks) * 100)}%` : '0%'}
           trendUp={true}
           color="success"
         />
         <StatCard
-          title="Avg. Rework"
-          value={overview?.average_rework?.toFixed(2) || '0'}
+          title="Rework"
+          value={overview?.rework_count || 0}
           icon={ArrowPathIcon}
-          trend="-5%"
-          trendUp={false}
+          trend={overview?.total_tasks > 0 ? `${Math.round((overview?.rework_count / overview?.total_tasks) * 100)}%` : '0%'}
           color="danger"
         />
       </div>
 
+      {/* Secondary Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard
-          title="Developers"
-          value={overview?.total_developers || 0}
+          title="Trainers"
+          value={overview?.total_trainers || 0}
           icon={UserGroupIcon}
           color="primary"
-          small
-        />
-        <StatCard
-          title="Reviewers"
-          value={overview?.total_reviewers || 0}
-          icon={UserGroupIcon}
-          color="success"
           small
         />
         <StatCard
           title="Domains"
           value={overview?.total_domains || 0}
-          icon={DocumentTextIcon}
+          icon={FolderIcon}
+          color="success"
+          small
+        />
+        <StatCard
+          title="Batches"
+          value={overview?.total_batches || 0}
+          icon={ArchiveBoxIcon}
           color="warning"
           small
         />
         <StatCard
-          title="Active Tasks"
-          value={overview?.open_prs || 0}
-          icon={ExclamationTriangleIcon}
-          color="danger"
+          title="Approval Rate"
+          value={`${((overview?.approval_rate || 0) * 100).toFixed(1)}%`}
+          icon={CheckCircleIcon}
+          color="success"
           small
         />
+      </div>
+
+      {/* Status Breakdown Cards */}
+      <div className="card">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Status Breakdown</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+          <div className="text-center p-3 rounded-lg bg-gray-50">
+            <p className="text-2xl font-bold text-gray-500">{overview?.draft_count || 0}</p>
+            <p className="text-xs text-gray-600">Draft</p>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-amber-50">
+            <p className="text-2xl font-bold text-amber-600">{overview?.pending_review_count || 0}</p>
+            <p className="text-xs text-gray-600">Pending Review</p>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-orange-50">
+            <p className="text-2xl font-bold text-orange-600">{overview?.in_expert_review_count || 0}</p>
+            <p className="text-xs text-gray-600">Expert Review</p>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-violet-50">
+            <p className="text-2xl font-bold text-violet-600">{overview?.pending_calibrator_review_count || 0}</p>
+            <p className="text-xs text-gray-600">Pending Calibrator</p>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-indigo-50">
+            <p className="text-2xl font-bold text-indigo-600">{overview?.in_calibrator_review_count || 0}</p>
+            <p className="text-xs text-gray-600">Calibrator Review</p>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-blue-50">
+            <p className="text-2xl font-bold text-blue-600">{overview?.in_pod_lead_review_count || 0}</p>
+            <p className="text-xs text-gray-600">Pod Lead Review</p>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-red-50">
+            <p className="text-2xl font-bold text-red-600">{overview?.rework_count || 0}</p>
+            <p className="text-xs text-gray-600">Rework</p>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-green-50">
+            <p className="text-2xl font-bold text-green-600">{overview?.approved_count || 0}</p>
+            <p className="text-xs text-gray-600">Approved</p>
+          </div>
+        </div>
       </div>
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          <ChartCard title="PR Activity Timeline">
-            {timelineData && (
+          <ChartCard title="Task Activity Timeline">
+            {timelineData && timelineData.length > 0 ? (
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={timelineData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -175,43 +236,47 @@ const Dashboard = ({ lastUpdate }) => {
                   <Line 
                     type="monotone" 
                     dataKey="created" 
-                    stroke="#f39c12" 
+                    stroke="#f59e0b" 
                     strokeWidth={2}
-                    dot={{ fill: '#f39c12', r: 3 }}
+                    dot={{ fill: '#f59e0b', r: 3 }}
                     activeDot={{ r: 5 }}
                     name="Created"
                   />
                   <Line 
                     type="monotone" 
-                    dataKey="merged" 
-                    stroke="#2ecc71" 
+                    dataKey="approved" 
+                    stroke="#22c55e" 
                     strokeWidth={2}
-                    dot={{ fill: '#2ecc71', r: 3 }}
+                    dot={{ fill: '#22c55e', r: 3 }}
                     activeDot={{ r: 5 }}
-                    name="Merged"
+                    name="Approved"
                   />
                   <Line 
                     type="monotone" 
                     dataKey="rework" 
-                    stroke="#e74c3c" 
+                    stroke="#ef4444" 
                     strokeWidth={2}
-                    dot={{ fill: '#e74c3c', r: 3 }}
+                    dot={{ fill: '#ef4444', r: 3 }}
                     activeDot={{ r: 5 }}
                     name="Rework"
                   />
                 </LineChart>
               </ResponsiveContainer>
+            ) : (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">
+                No timeline data available
+              </div>
             )}
           </ChartCard>
         </div>
 
         <div>
-          <ChartCard title="PR State Distribution">
-            {stateDistribution && (
+          <ChartCard title="Task Status Distribution">
+            {statusBreakdown && statusBreakdown.length > 0 ? (
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart margin={{ top: 5, right: 25, bottom: 5, left: 25 }}>
                   <Pie
-                    data={stateDistribution}
+                    data={statusBreakdown}
                     cx="50%"
                     cy="42%"
                     labelLine={{
@@ -242,8 +307,8 @@ const Dashboard = ({ lastUpdate }) => {
                     fill="#8884d8"
                     dataKey="value"
                   >
-                    {stateDistribution.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    {statusBreakdown.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
                   <Tooltip />
@@ -251,18 +316,22 @@ const Dashboard = ({ lastUpdate }) => {
                     verticalAlign="bottom" 
                     height={25}
                     iconSize={10}
-                    wrapperStyle={{ fontSize: '12px', paddingTop: '5px' }}
+                    wrapperStyle={{ fontSize: '11px', paddingTop: '5px' }}
                   />
                 </PieChart>
               </ResponsiveContainer>
+            ) : (
+              <div className="h-[300px] flex items-center justify-center text-gray-500">
+                No status data available
+              </div>
             )}
           </ChartCard>
         </div>
       </div>
 
-      {/* Rework by Day Chart */}
-      <ChartCard title="Daily PR Statistics">
-        {timelineData && (
+      {/* Daily Task Statistics */}
+      <ChartCard title="Daily Task Statistics">
+        {timelineData && timelineData.length > 0 ? (
           <ResponsiveContainer width="100%" height={250}>
             <BarChart data={timelineData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -273,23 +342,25 @@ const Dashboard = ({ lastUpdate }) => {
                 labelStyle={{ color: '#111827', fontWeight: 600 }}
               />
               <Legend />
-              <Bar dataKey="created" fill="#f39c12" name="Created" />
-              <Bar dataKey="merged" fill="#2ecc71" name="Merged" />
+              <Bar dataKey="created" fill="#f59e0b" name="Created" />
+              <Bar dataKey="approved" fill="#22c55e" name="Approved" />
             </BarChart>
           </ResponsiveContainer>
+        ) : (
+          <div className="h-[250px] flex items-center justify-center text-gray-500">
+            No timeline data available
+          </div>
         )}
       </ChartCard>
 
-      {/* Recent Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-3">
-          <ActivityFeed activities={overview?.recent_activity || []} />
+      {/* Sync Info */}
+      {overview?.last_sync_time && (
+        <div className="text-center text-sm text-gray-500">
+          Last synced: {new Date(overview.last_sync_time).toLocaleString()}
         </div>
-      </div>
+      )}
     </div>
   );
 };
 
 export default Dashboard;
-
-

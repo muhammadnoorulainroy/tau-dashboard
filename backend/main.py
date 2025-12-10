@@ -68,6 +68,16 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize database: {str(e)}")
         # Continue anyway to allow the app to start
     
+    # Initialize v2 database tables (Task Agent)
+    try:
+        logger.info("Initializing v2 database tables...")
+        from database_v2 import init_db_v2
+        init_db_v2()
+        logger.info("V2 database tables initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize v2 database: {str(e)}")
+        # Continue anyway to allow the app to start
+    
     # Run database migrations automatically
     try:
         logger.info("Running database migrations...")
@@ -111,44 +121,42 @@ async def lifespan(app: FastAPI):
         logger.warning("Application will continue, but hierarchy data may be outdated")
         # Continue anyway to allow the app to start
     
-    # Update allowed domains from GitHub on startup
+    # Sync environments/domains from Task Agent API on startup
     try:
         logger.info("=" * 60)
-        logger.info("Updating allowed domains from GitHub repo...")
+        logger.info("Syncing environments from Task Agent API...")
         logger.info("=" * 60)
         
-        from config import update_allowed_domains, settings
-        success = update_allowed_domains(force=True)
+        from database_v2 import SessionLocal as SessionLocalV2
+        from task_agent_service import TaskAgentService
         
-        if success:
-            logger.info(f"✅ Domains updated: {len(settings.allowed_domains)} domains discovered")
-            logger.info(f"   Domains: {', '.join(settings.allowed_domains)}")
-        else:
-            logger.warning(f"⚠️  Using fallback domain list: {len(settings.allowed_domains)} domains")
+        db_v2 = SessionLocalV2()
+        try:
+            service = TaskAgentService()
+            env_count = service.sync_environments(db_v2)
+            logger.info(f"✅ Synced {env_count} environments from Task Agent API")
+        except Exception as e:
+            logger.error(f"Failed to sync environments: {e}")
+        finally:
+            db_v2.close()
         
         logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"Failed to update domains from GitHub: {str(e)}")
-        logger.warning("Application will continue with fallback domain list")
-        # Continue anyway to allow the app to start
+        logger.error(f"Failed to sync environments from Task Agent API: {str(e)}")
+        logger.warning("Application will continue, environments can be synced manually")
     
-    # Start background sync task
-    background_task = None
-    domain_refresh_task = None
-    three_day_sync_task = None
-    similarity_task = None
+    # Start v2 background sync tasks (Task Agent)
+    task_agent_sync_task = None
+    v2_similarity_task = None
     try:
-        from background_tasks import start_background_sync, start_domain_refresh, start_3_day_sync, start_similarity_calculation, start_revert_verification
-        background_task = asyncio.create_task(start_background_sync(manager))
-        domain_refresh_task = asyncio.create_task(start_domain_refresh())
-        three_day_sync_task = asyncio.create_task(start_3_day_sync(manager))
-        similarity_task = asyncio.create_task(start_similarity_calculation())
-        revert_verification_task = asyncio.create_task(start_revert_verification())
-        logger.info("Background sync, domain refresh, 3-day sync, similarity calculation, and revert verification tasks started")
+        from background_tasks_v2 import start_task_agent_sync, start_v2_similarity_calculation
+        task_agent_sync_task = asyncio.create_task(start_task_agent_sync(manager))
+        v2_similarity_task = asyncio.create_task(start_v2_similarity_calculation())
+        logger.info("Task Agent background sync and similarity calculation tasks started")
     except ImportError as e:
-        logger.warning(f"Background sync module not available: {str(e)}")
+        logger.warning(f"Background v2 sync module not available: {str(e)}")
     except Exception as e:
-        logger.error(f"Failed to start background sync: {str(e)}")
+        logger.error(f"Failed to start v2 background sync: {str(e)}")
     
     # Do initial sync (disabled for faster startup, can be triggered manually)
     # try:
@@ -166,32 +174,23 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down...")
     
-    # Cancel background periodic sync task
-    if background_task:
-        logger.info("Cancelling background periodic sync task...")
-        background_task.cancel()
+    # Cancel Task Agent sync task
+    if task_agent_sync_task:
+        logger.info("Cancelling Task Agent sync task...")
+        task_agent_sync_task.cancel()
         try:
-            await background_task
+            await task_agent_sync_task
         except asyncio.CancelledError:
-            logger.info("Background periodic sync task cancelled")
+            logger.info("Task Agent sync task cancelled")
     
-    # Cancel domain refresh task
-    if domain_refresh_task:
-        logger.info("Cancelling domain refresh task...")
-        domain_refresh_task.cancel()
+    # Cancel v2 similarity task
+    if v2_similarity_task:
+        logger.info("Cancelling v2 similarity task...")
+        v2_similarity_task.cancel()
         try:
-            await domain_refresh_task
+            await v2_similarity_task
         except asyncio.CancelledError:
-            logger.info("Domain refresh task cancelled")
-    
-    # Cancel 3-day sync task
-    if three_day_sync_task:
-        logger.info("Cancelling 3-day sync task...")
-        three_day_sync_task.cancel()
-        try:
-            await three_day_sync_task
-        except asyncio.CancelledError:
-            logger.info("3-day sync task cancelled")
+            logger.info("V2 similarity task cancelled")
     
     # Cancel all active manual sync tasks
     if active_sync_tasks:
@@ -215,10 +214,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="TAU Dashboard API",
-    description="Dashboard for tracking PR metrics",
-    version="1.0.0",
+    description="Dashboard for tracking PR metrics and Task Agent data",
+    version="2.0.0",
     lifespan=lifespan
 )
+
+# Include v2 API router for Task Agent data
+from api_v2 import router as api_v2_router
+app.include_router(api_v2_router)
 
 # CORS middleware - import settings at the top of this file
 from config import settings
@@ -252,8 +255,12 @@ async def authentication_middleware(request: Request, call_next):
         "/health"
     ]
     
-    # Check if path is public
+    # Check if path is public (including /api/v2/* for Task Agent API testing)
     if request.url.path in public_paths or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    
+    # Allow v2 endpoints during development (TODO: remove in production)
+    if request.url.path.startswith("/api/v2/"):
         return await call_next(request)
     
     # WebSocket connections don't use Bearer tokens in headers, skip for now
