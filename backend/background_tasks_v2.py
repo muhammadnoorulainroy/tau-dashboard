@@ -22,11 +22,16 @@ async def start_task_agent_sync(manager=None):
         manager: Optional WebSocket connection manager for broadcasting updates
     """
     logger.info("Starting Task Agent API background sync task")
+    logger.info("Running initial sync immediately on startup...")
+    
+    first_run = True
     
     while True:
         try:
-            # Wait for the interval before syncing
-            await asyncio.sleep(SYNC_INTERVAL)
+            # On first run, sync immediately; on subsequent runs, wait for interval
+            if not first_run:
+                await asyncio.sleep(SYNC_INTERVAL)
+            first_run = False
             
             logger.info("=" * 60)
             logger.info("Running scheduled Task Agent API sync")
