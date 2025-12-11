@@ -62,10 +62,66 @@ const TaskSimilarityView = ({ lastUpdate }) => {
   const [selectedDomain, setSelectedDomain] = useState('');
   const [selectedDifficulty, setSelectedDifficulty] = useState('');
 
+  // Sorting
+  const [sortBy, setSortBy] = useState('similarity');
+  const [sortOrder, setSortOrder] = useState('desc');
+  
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const perPageOptions = [10, 25, 50, 100];
+
+  const handleSort = (field) => {
+    if (sortBy === field) {
+      setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc');
+    } else {
+      setSortBy(field);
+      setSortOrder('desc');
+    }
+    setCurrentPage(1);
+  };
+
+  const SortIcon = ({ field }) => {
+    if (sortBy !== field) return (
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-4 w-4 ml-1 text-gray-300">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 15L12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" />
+      </svg>
+    );
+    return sortOrder === 'desc' ? (
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-4 w-4 ml-1">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+      </svg>
+    ) : (
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-4 w-4 ml-1">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+      </svg>
+    );
+  };
+
+  const sortTasks = (data) => {
+    return [...data].sort((a, b) => {
+      let aVal, bVal;
+      
+      if (sortBy === 'similarity') {
+        const aTop = similarTasks[a.id]?.[0];
+        const bTop = similarTasks[b.id]?.[0];
+        aVal = aTop?.similarity_score ?? -1;
+        bVal = bTop?.similarity_score ?? -1;
+      } else {
+        aVal = a[sortBy];
+        bVal = b[sortBy];
+      }
+      
+      // Handle nulls
+      if (aVal == null) aVal = sortOrder === 'desc' ? -Infinity : Infinity;
+      if (bVal == null) bVal = sortOrder === 'desc' ? -Infinity : Infinity;
+      
+      if (sortOrder === 'asc') {
+        return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+      }
+      return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+    });
+  };
   
   // Custom search state
   const [customSearchText, setCustomSearchText] = useState('');
@@ -221,10 +277,11 @@ const TaskSimilarityView = ({ lastUpdate }) => {
     return 'text-green-600 font-semibold';
   };
 
-  // Pagination
-  const totalPages = Math.ceil(tasks.length / itemsPerPage);
+  // Sorting and Pagination
+  const sortedTasks = sortTasks(tasks);
+  const totalPages = Math.ceil(sortedTasks.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
-  const currentTasks = tasks.slice(startIndex, startIndex + itemsPerPage);
+  const currentTasks = sortedTasks.slice(startIndex, startIndex + itemsPerPage);
 
   if (loading && tasks.length === 0) {
     return (
@@ -630,18 +687,34 @@ const TaskSimilarityView = ({ lastUpdate }) => {
                     </div>
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    <div className="flex items-center gap-1">
+                    <button 
+                      onClick={() => handleSort('similarity')}
+                      className="flex items-center gap-1 hover:text-gray-700"
+                    >
                       Most Similar
-                      <Tooltip text="The most similar task found - score and task ID">
+                      <SortIcon field="similarity" />
+                      <Tooltip text="The most similar task found - score and task ID. Click to sort.">
                         <QuestionMarkCircleIcon className="h-4 w-4 text-gray-400 cursor-help" />
                       </Tooltip>
-                    </div>
+                    </button>
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Difficulty
+                    <button 
+                      onClick={() => handleSort('difficulty')}
+                      className="flex items-center hover:text-gray-700"
+                    >
+                      Difficulty
+                      <SortIcon field="difficulty" />
+                    </button>
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Trainer
+                    <button 
+                      onClick={() => handleSort('trainer_name')}
+                      className="flex items-center hover:text-gray-700"
+                    >
+                      Trainer
+                      <SortIcon field="trainer_name" />
+                    </button>
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Actions
@@ -890,8 +963,8 @@ const TaskSimilarityView = ({ lastUpdate }) => {
               </div>
               <div className="text-sm text-gray-700">
                 Showing <span className="font-medium">{startIndex + 1}</span> to{' '}
-                <span className="font-medium">{Math.min(startIndex + itemsPerPage, tasks.length)}</span> of{' '}
-                <span className="font-medium">{tasks.length}</span> tasks
+                <span className="font-medium">{Math.min(startIndex + itemsPerPage, sortedTasks.length)}</span> of{' '}
+                <span className="font-medium">{sortedTasks.length}</span> tasks
               </div>
             </div>
             {totalPages > 1 && (

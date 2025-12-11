@@ -5,7 +5,8 @@ import {
   LockClosedIcon,
   LockOpenIcon,
   CheckCircleIcon,
-  ClockIcon
+  ClockIcon,
+  ChevronUpDownIcon
 } from '@heroicons/react/24/outline';
 
 const STATUS_COLORS = {
@@ -14,15 +15,64 @@ const STATUS_COLORS = {
   'closed': 'bg-gray-100 text-gray-800'
 };
 
+const SORT_OPTIONS = [
+  { value: 'task_count_desc', label: 'Tasks (High to Low)' },
+  { value: 'task_count_asc', label: 'Tasks (Low to High)' },
+  { value: 'date_opened_desc', label: 'Newest First' },
+  { value: 'date_opened_asc', label: 'Oldest First' },
+  { value: 'batch_name_asc', label: 'Name (A-Z)' },
+  { value: 'batch_name_desc', label: 'Name (Z-A)' },
+];
+
 const BatchesView = ({ lastUpdate }) => {
   const [batches, setBatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedStatus, setSelectedStatus] = useState('');
+  const [sortOption, setSortOption] = useState('task_count_desc');
   
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const perPageOptions = [10, 25, 50, 100];
+
+  const sortBatches = (data) => {
+    const [field, order] = sortOption.split('_').reduce((acc, part, idx, arr) => {
+      if (idx === arr.length - 1) {
+        return [acc.join('_'), part];
+      }
+      return [[...acc, part].join('_')];
+    }, [[]]);
+    
+    // Simpler parsing
+    const isDesc = sortOption.endsWith('_desc');
+    const sortField = sortOption.replace('_desc', '').replace('_asc', '');
+    
+    return [...data].sort((a, b) => {
+      let aVal = a[sortField];
+      let bVal = b[sortField];
+      
+      // Handle dates
+      if (sortField === 'date_opened' || sortField === 'date_closed') {
+        aVal = aVal ? new Date(aVal).getTime() : 0;
+        bVal = bVal ? new Date(bVal).getTime() : 0;
+      }
+      
+      // Handle strings
+      if (typeof aVal === 'string') {
+        aVal = aVal.toLowerCase();
+        bVal = bVal?.toLowerCase() || '';
+      }
+      
+      // Handle nulls
+      if (aVal == null) aVal = 0;
+      if (bVal == null) bVal = 0;
+      
+      if (isDesc) {
+        return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+      }
+      return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+    });
+  };
 
   useEffect(() => {
     fetchBatches();
@@ -57,16 +107,29 @@ const BatchesView = ({ lastUpdate }) => {
     );
   }
 
-  // Pagination calculations
-  const totalPages = Math.ceil(batches.length / itemsPerPage);
+  // Sort and pagination calculations
+  const sortedBatches = sortBatches(batches);
+  const totalPages = Math.ceil(sortedBatches.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedBatches = batches.slice(startIndex, startIndex + itemsPerPage);
+  const paginatedBatches = sortedBatches.slice(startIndex, startIndex + itemsPerPage);
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-3xl font-bold text-gray-900">Batches</h2>
         <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <ChevronUpDownIcon className="h-5 w-5 text-gray-400" />
+            <select
+              value={sortOption}
+              onChange={(e) => { setSortOption(e.target.value); setCurrentPage(1); }}
+              className="input"
+            >
+              {SORT_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
           <select
             value={selectedStatus}
             onChange={(e) => { setSelectedStatus(e.target.value); setCurrentPage(1); }}
@@ -185,7 +248,7 @@ const BatchesView = ({ lastUpdate }) => {
                 <span className="text-sm text-gray-500">per page</span>
               </div>
               <div className="text-sm text-gray-700">
-                Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, batches.length)} of {batches.length} batches
+                Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, sortedBatches.length)} of {sortedBatches.length} batches
               </div>
             </div>
             {totalPages > 1 && (

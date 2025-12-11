@@ -14,6 +14,8 @@ import {
   MagnifyingGlassIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
   InformationCircleIcon
 } from '@heroicons/react/24/outline';
 
@@ -27,10 +29,58 @@ const AggregationView = ({ lastUpdate }) => {
   const [selectedDomain, setSelectedDomain] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   
+  // Sorting
+  const [sortBy, setSortBy] = useState('total_tasks');
+  const [sortOrder, setSortOrder] = useState('desc');
+  
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const perPageOptions = [10, 25, 50, 100];
+  
+  const handleSort = (field) => {
+    if (sortBy === field) {
+      setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc');
+    } else {
+      setSortBy(field);
+      setSortOrder('desc');
+    }
+  };
+
+  const SortIcon = ({ field }) => {
+    if (sortBy !== field) return <ChevronUpDownIcon className="h-4 w-4 ml-1 text-gray-300" />;
+    return sortOrder === 'desc' ? 
+      <ChevronDownIcon className="h-4 w-4 ml-1" /> : 
+      <ChevronUpIcon className="h-4 w-4 ml-1" />;
+  };
+
+  const ChevronUpDownIcon = ({ className }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 15L12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" />
+    </svg>
+  );
+
+  const sortData = (data) => {
+    return [...data].sort((a, b) => {
+      let aVal = a[sortBy];
+      let bVal = b[sortBy];
+      
+      // Handle computed fields
+      if (sortBy === 'reviewed_count') {
+        aVal = (a.approved_count || 0) + (a.rework_count || 0);
+        bVal = (b.approved_count || 0) + (b.rework_count || 0);
+      }
+      
+      // Null handling
+      if (aVal == null) aVal = 0;
+      if (bVal == null) bVal = 0;
+      
+      if (sortOrder === 'asc') {
+        return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+      }
+      return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+    });
+  };
 
   useEffect(() => {
     fetchEnvironments();
@@ -108,6 +158,11 @@ const AggregationView = ({ lastUpdate }) => {
           <span className="font-bold text-lg text-gray-900">{person.total_tasks}</span>
         </td>
         <td className="px-4 py-3 text-center">
+          <span className="px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800">
+            {person.reviewed_count || (person.approved_count + person.rework_count)}
+          </span>
+        </td>
+        <td className="px-4 py-3 text-center">
           <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
             {person.approved_count}
           </span>
@@ -150,10 +205,13 @@ const AggregationView = ({ lastUpdate }) => {
   const renderTable = (data, nameKey, emailKey, roleLabel) => {
     const filteredData = filterBySearch(data, nameKey, emailKey);
     
+    // Apply sorting
+    const sortedData = sortData(filteredData);
+    
     // Pagination
-    const totalPages = Math.ceil(filteredData.length / itemsPerPage);
+    const totalPages = Math.ceil(sortedData.length / itemsPerPage);
     const startIndex = (currentPage - 1) * itemsPerPage;
-    const paginatedData = filteredData.slice(startIndex, startIndex + itemsPerPage);
+    const paginatedData = sortedData.slice(startIndex, startIndex + itemsPerPage);
     
     if (loading) {
       return (
@@ -183,31 +241,94 @@ const AggregationView = ({ lastUpdate }) => {
                   {roleLabel}
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Total
+                  <button 
+                    onClick={() => handleSort('total_tasks')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Total
+                    <SortIcon field="total_tasks" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Approved
+                  <button 
+                    onClick={() => handleSort('reviewed_count')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Reviewed
+                    <SortIcon field="reviewed_count" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Rework
+                  <button 
+                    onClick={() => handleSort('approved_count')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Approved
+                    <SortIcon field="approved_count" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  In Review
+                  <button 
+                    onClick={() => handleSort('rework_count')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Rework
+                    <SortIcon field="rework_count" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Draft
+                  <button 
+                    onClick={() => handleSort('in_review_count')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    In Review
+                    <SortIcon field="in_review_count" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Approval Rate
+                  <button 
+                    onClick={() => handleSort('draft_count')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Draft
+                    <SortIcon field="draft_count" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Rework Rate
+                  <button 
+                    onClick={() => handleSort('approval_rate')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Approval Rate
+                    <SortIcon field="approval_rate" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Trainers
+                  <button 
+                    onClick={() => handleSort('rework_rate')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Rework Rate
+                    <SortIcon field="rework_rate" />
+                  </button>
                 </th>
                 <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Domains
+                  <button 
+                    onClick={() => handleSort('trainer_count')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Trainers
+                    <SortIcon field="trainer_count" />
+                  </button>
+                </th>
+                <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <button 
+                    onClick={() => handleSort('domain_count')}
+                    className="flex items-center justify-center mx-auto hover:text-gray-700"
+                  >
+                    Domains
+                    <SortIcon field="domain_count" />
+                  </button>
                 </th>
               </tr>
             </thead>
@@ -234,7 +355,7 @@ const AggregationView = ({ lastUpdate }) => {
               <span className="text-sm text-gray-500">per page</span>
             </div>
             <div className="text-sm text-gray-500">
-              Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, filteredData.length)} of {filteredData.length}
+              Showing {startIndex + 1} to {Math.min(startIndex + itemsPerPage, sortedData.length)} of {sortedData.length}
             </div>
           </div>
           {totalPages > 1 && (
@@ -319,8 +440,9 @@ const AggregationView = ({ lastUpdate }) => {
               <li>• <strong>POD Leads:</strong> Team leads responsible for final task approval</li>
               <li>• <strong>Calibrators:</strong> Reviewers who calibrate task quality and provide feedback</li>
               <li>• <strong>Expert Reviewers:</strong> Subject matter experts who review task accuracy</li>
-              <li>• <strong>Approval Rate:</strong> Percentage of tasks that were approved without rework</li>
-              <li>• <strong>Rework Rate:</strong> Percentage of tasks that needed revisions</li>
+              <li>• <strong>Reviewed:</strong> Total tasks reviewed (Approved + Rework) - tasks where a review decision was made</li>
+              <li>• <strong>Approval Rate:</strong> Percentage of reviewed tasks that were approved (Approved / Reviewed)</li>
+              <li>• <strong>Rework Rate:</strong> Percentage of reviewed tasks that needed revisions (Rework / Reviewed)</li>
             </ul>
           </div>
         </div>

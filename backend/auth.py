@@ -119,10 +119,12 @@ def verify_google_token(token: str) -> Optional[dict]:
     
     try:
         # Verify the token with Google
+        # clock_skew_in_seconds adds tolerance for clock drift between client and Google servers
         idinfo = id_token.verify_oauth2_token(
             token, 
             requests.Request(), 
-            settings.app_google_client_id
+            settings.app_google_client_id,
+            clock_skew_in_seconds=10  # Allow 10 seconds of clock skew
         )
         
         # Verify the issuer

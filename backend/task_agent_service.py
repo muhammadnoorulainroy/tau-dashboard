@@ -274,6 +274,61 @@ class TaskAgentService:
         
         return None
     
+    def extract_rework_attribution(self, task_history: List[Dict], name_email_lookup: Dict[str, str]) -> Optional[Dict]:
+        """
+        Extract who sent the task to rework from task_history
+        
+        Events that indicate a reviewer sent task to rework:
+        - task_sent_to_rework_by_pod_lead
+        - task_sent_to_rework_by_calibrator  
+        - task_sent_to_rework_by_expert
+        
+        NOTE: We explicitly EXCLUDE 'task_started_rework' which is when 
+        the trainer starts working on fixing the task (not who sent it to rework)
+        
+        Returns:
+            Dict with 'name', 'email', 'role' or None
+        """
+        if not task_history:
+            return None
+        
+        # Sort by created_at descending to get most recent rework event
+        sorted_history = sorted(
+            task_history, 
+            key=lambda x: x.get('created_at', ''), 
+            reverse=True
+        )
+        
+        for event in sorted_history:
+            event_type = event.get('event', '').lower()
+            initiated_by = event.get('initiated_by')
+            
+            if not initiated_by:
+                continue
+            
+            # Only match "task_sent_to_rework_by_*" events (not task_started_rework)
+            if not event_type.startswith('task_sent_to_rework_by'):
+                continue
+            
+            # Determine role from event type
+            role = None
+            if 'pod_lead' in event_type:
+                role = 'pod_lead'
+            elif 'calibrator' in event_type:
+                role = 'calibrator'
+            elif 'expert' in event_type:
+                role = 'expert_reviewer'
+            
+            # Found a valid rework event
+            email = self.lookup_email_by_name(initiated_by, name_email_lookup)
+            return {
+                'name': initiated_by,
+                'email': email,
+                'role': role
+            }
+        
+        return None
+    
     def sync_batches(self, db: Session) -> int:
         """Sync batches to database"""
         batches = self.fetch_all_batches()
@@ -451,7 +506,8 @@ class TaskAgentService:
                     task.tool_sequence = task_data["tool_sequence"]
             
             # Fetch full details if needed (for instruction_text and tool_sequence)
-            if fetch_details and (not task.instruction_text or not task.tool_sequence):
+            needs_details = not task.instruction_text or not task.tool_sequence or not task.task_history
+            if fetch_details and needs_details:
                 if (i + 1) % 10 == 0:
                     logger.info(f"Fetching details for task {i + 1}/{len(tasks)}...")
                 
@@ -489,6 +545,24 @@ class TaskAgentService:
                                 pass
                         else:
                             task.tool_sequence = detail["tool_sequence"]
+                    
+                    # Store task_history
+                    if detail.get("task_history"):
+                        task.task_history = detail["task_history"]
+            
+            # Always extract rework attribution from task_history (even if already synced before)
+            # This ensures the attribution logic is always up-to-date
+            if task.task_history:
+                rework_info = self.extract_rework_attribution(task.task_history, name_email_lookup)
+                if rework_info:
+                    task.rework_by_name = rework_info.get('name')
+                    task.rework_by_email = rework_info.get('email')
+                    task.rework_by_role = rework_info.get('role')
+                else:
+                    # Clear any previous rework attribution if no rework events found
+                    task.rework_by_name = None
+                    task.rework_by_email = None
+                    task.rework_by_role = None
             
             task.last_synced = datetime.now(timezone.utc)
             

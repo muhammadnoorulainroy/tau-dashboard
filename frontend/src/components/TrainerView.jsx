@@ -18,6 +18,7 @@ const TrainerView = ({ lastUpdate }) => {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [isFiltering, setIsFiltering] = useState(false);
+  const [isSorting, setIsSorting] = useState(false);
   const [sortBy, setSortBy] = useState('total_tasks');
   const [sortOrder, setSortOrder] = useState('desc');
   
@@ -90,10 +91,12 @@ const TrainerView = ({ lastUpdate }) => {
     } finally {
       setLoading(false);
       setIsFiltering(false);
+      setIsSorting(false);
     }
   };
 
   const handleSort = (field) => {
+    setIsSorting(true);
     if (sortBy === field) {
       setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc');
     } else {
@@ -164,7 +167,16 @@ const TrainerView = ({ lastUpdate }) => {
       </div>
 
       {/* Table */}
-      <div className="card overflow-hidden">
+      <div className="card overflow-hidden relative">
+        {/* Sorting overlay */}
+        {isSorting && (
+          <div className="absolute inset-0 bg-white/70 z-10 flex items-center justify-center">
+            <div className="flex items-center gap-2 text-gray-600">
+              <ArrowPathIcon className="h-5 w-5 animate-spin" />
+              <span className="text-sm font-medium">Sorting...</span>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
@@ -206,9 +218,13 @@ const TrainerView = ({ lastUpdate }) => {
                   </button>
                 </th>
                 <th className="px-6 py-3 text-center">
-                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <button 
+                    onClick={() => handleSort('in_review_count')}
+                    className="flex items-center justify-center text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-gray-700 mx-auto"
+                  >
                     In Review
-                  </span>
+                    <SortIcon field="in_review_count" />
+                  </button>
                 </th>
                 <th className="px-6 py-3 text-center">
                   <button 

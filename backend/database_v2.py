@@ -82,9 +82,15 @@ class Task(Base):
     tool_sequence = Column(JSON, nullable=True)  # Action graph JSON
     tools = Column(JSON, nullable=True)  # Array of tool calls
     
+    # Rework attribution (who sent this task to rework - extracted from task_history)
+    rework_by_name = Column(String, nullable=True)  # Name of person who sent to rework
+    rework_by_email = Column(String, nullable=True)  # Email of person who sent to rework
+    rework_by_role = Column(String, nullable=True)  # Role: pod_lead, calibrator, expert_reviewer
+    
     # Full metadata storage
     tau_metadata = Column(JSON, nullable=True)  # Full tau_metadata object
     scenarios = Column(JSON, nullable=True)  # Full scenarios array
+    task_history = Column(JSON, nullable=True)  # Full task history for audit trail
     
     # Sync tracking
     last_synced = Column(DateTime(timezone=True), default=func.now())
@@ -317,8 +323,33 @@ def get_db():
 
 
 def init_db_v2():
-    """Create all v2 database tables."""
+    """Create all v2 database tables and run migrations."""
     Base.metadata.create_all(bind=engine)
+    
+    # Run column migrations for existing tables
+    _run_migrations()
+
+
+def _run_migrations():
+    """Add any missing columns to existing tables."""
+    from sqlalchemy import text
+    
+    with engine.connect() as conn:
+        # Check if rework attribution columns exist
+        result = conn.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'tasks' AND column_name = 'rework_by_name'
+        """))
+        
+        if result.fetchone() is None:
+            print('Migration: Adding rework attribution columns to tasks table...')
+            conn.execute(text('ALTER TABLE tasks ADD COLUMN IF NOT EXISTS rework_by_name VARCHAR'))
+            conn.execute(text('ALTER TABLE tasks ADD COLUMN IF NOT EXISTS rework_by_email VARCHAR'))
+            conn.execute(text('ALTER TABLE tasks ADD COLUMN IF NOT EXISTS rework_by_role VARCHAR'))
+            conn.execute(text('ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_history JSONB'))
+            conn.commit()
+            print('Migration: Rework columns added successfully')
 
 
 # All valid task statuses from Task Agent API

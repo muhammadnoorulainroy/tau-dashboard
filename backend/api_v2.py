@@ -223,7 +223,7 @@ def get_trainers(
     per_page: int = Query(50, ge=1, le=200),
     domain: Optional[str] = None,
     search: Optional[str] = None,
-    sort_by: str = Query("total_tasks", regex="^(total_tasks|approved_count|rework_count|approval_rate)$"),
+    sort_by: str = Query("total_tasks", regex="^(total_tasks|approved_count|rework_count|approval_rate|in_review_count|trainer_name)$"),
     sort_order: str = Query("desc", regex="^(asc|desc)$"),
     db: Session = Depends(get_db)
 ):
@@ -311,6 +311,10 @@ def get_trainers(
         trainers.sort(key=lambda t: t.rework_count, reverse=reverse)
     elif sort_by == "approval_rate":
         trainers.sort(key=lambda t: t.approval_rate, reverse=reverse)
+    elif sort_by == "in_review_count":
+        trainers.sort(key=lambda t: t.in_review_count, reverse=reverse)
+    elif sort_by == "trainer_name":
+        trainers.sort(key=lambda t: (t.trainer_name or '').lower(), reverse=reverse)
     
     # Paginate
     total = len(trainers)
@@ -728,19 +732,29 @@ def get_pod_lead_aggregation(
     """Get task statistics aggregated by POD Lead"""
     from sqlalchemy import or_
     
-    # Filter tasks that have either pod_lead_email OR pod_lead_name
+    # Get tasks where POD lead is assigned (for non-rework tasks)
     query = db.query(Task).filter(
         or_(Task.pod_lead_email.isnot(None), Task.pod_lead_name.isnot(None))
     )
     if domain:
         query = query.filter(Task.domain == domain)
+    tasks_with_pod_lead = query.all()
     
-    tasks = query.all()
+    # Get ALL tasks that were ever sent to rework BY a POD lead
+    # (regardless of current status - task may have been fixed and approved)
+    rework_query = db.query(Task).filter(
+        Task.rework_by_role == 'pod_lead',
+        or_(Task.rework_by_email.isnot(None), Task.rework_by_name.isnot(None))
+    )
+    if domain:
+        rework_query = rework_query.filter(Task.domain == domain)
+    rework_tasks = rework_query.all()
     
-    # Group by POD Lead (use email as key, fall back to name if no email)
+    # Group by POD Lead
     pod_leads = {}
-    for task in tasks:
-        # Use email as key if available, otherwise use name
+    
+    # Process tasks with POD lead assigned (approved, in_review, etc.)
+    for task in tasks_with_pod_lead:
         key = task.pod_lead_email or task.pod_lead_name
         if not key:
             continue
@@ -768,7 +782,7 @@ def get_pod_lead_aggregation(
         if task.domain:
             pod_leads[key]["domains"].add(task.domain)
         
-        # Status counts
+        # Status counts (exclude rework here - we'll add from rework_tasks)
         if task.status == 'draft':
             pod_leads[key]["draft_count"] += 1
         elif task.status == 'pending_review':
@@ -781,10 +795,38 @@ def get_pod_lead_aggregation(
             pod_leads[key]["in_calibrator_review_count"] += 1
         elif task.status == 'in_pod_lead_review':
             pod_leads[key]["in_pod_lead_review_count"] += 1
-        elif task.status == 'rework':
-            pod_leads[key]["rework_count"] += 1
         elif task.status == 'approved':
             pod_leads[key]["approved_count"] += 1
+    
+    # Add rework tasks sent by each POD lead
+    for task in rework_tasks:
+        key = task.rework_by_email or task.rework_by_name
+        if not key:
+            continue
+        
+        if key not in pod_leads:
+            pod_leads[key] = {
+                "pod_lead_email": task.rework_by_email,
+                "pod_lead_name": task.rework_by_name,
+                "total_tasks": 0,
+                "draft_count": 0,
+                "pending_review_count": 0,
+                "in_expert_review_count": 0,
+                "pending_calibrator_review_count": 0,
+                "in_calibrator_review_count": 0,
+                "in_pod_lead_review_count": 0,
+                "rework_count": 0,
+                "approved_count": 0,
+                "trainers": set(),
+                "domains": set()
+            }
+        
+        pod_leads[key]["rework_count"] += 1
+        pod_leads[key]["total_tasks"] += 1
+        if task.trainer_email:
+            pod_leads[key]["trainers"].add(task.trainer_email)
+        if task.domain:
+            pod_leads[key]["domains"].add(task.domain)
     
     # Convert sets to counts and calculate metrics
     result = []
@@ -793,10 +835,12 @@ def get_pod_lead_aggregation(
         approved = data["approved_count"]
         rework = data["rework_count"]
         
+        reviewed = approved + rework  # Tasks that have been reviewed (decision made)
         result.append({
             "pod_lead_email": data["pod_lead_email"],
             "pod_lead_name": data["pod_lead_name"],
             "total_tasks": total,
+            "reviewed_count": reviewed,  # NEW: Approved + Rework = tasks reviewed
             "draft_count": data["draft_count"],
             "pending_review_count": data["pending_review_count"],
             "in_expert_review_count": data["in_expert_review_count"],
@@ -810,8 +854,8 @@ def get_pod_lead_aggregation(
                 data["pending_calibrator_review_count"] + data["in_calibrator_review_count"] +
                 data["in_pod_lead_review_count"]
             ),
-            "approval_rate": approved / total if total > 0 else 0,
-            "rework_rate": rework / total if total > 0 else 0,
+            "approval_rate": approved / reviewed if reviewed > 0 else 0,  # Changed: based on reviewed tasks
+            "rework_rate": rework / reviewed if reviewed > 0 else 0,  # Changed: based on reviewed tasks
             "trainer_count": len(data["trainers"]),
             "domain_count": len(data["domains"])
         })
@@ -834,18 +878,29 @@ def get_calibrator_aggregation(
     """Get task statistics aggregated by Calibrator (Reviewer)"""
     from sqlalchemy import or_
     
-    # Filter tasks that have either reviewer_email OR reviewer_name
+    # Get tasks where calibrator is assigned (for non-rework tasks)
     query = db.query(Task).filter(
         or_(Task.reviewer_email.isnot(None), Task.reviewer_name.isnot(None))
     )
     if domain:
         query = query.filter(Task.domain == domain)
+    tasks_with_calibrator = query.all()
     
-    tasks = query.all()
+    # Get ALL tasks that were ever sent to rework BY a calibrator
+    # (regardless of current status - task may have been fixed and approved)
+    rework_query = db.query(Task).filter(
+        Task.rework_by_role == 'calibrator',
+        or_(Task.rework_by_email.isnot(None), Task.rework_by_name.isnot(None))
+    )
+    if domain:
+        rework_query = rework_query.filter(Task.domain == domain)
+    rework_tasks = rework_query.all()
     
-    # Group by Calibrator (use email as key, fall back to name if no email)
+    # Group by Calibrator
     calibrators = {}
-    for task in tasks:
+    
+    # Process tasks with calibrator assigned
+    for task in tasks_with_calibrator:
         key = task.reviewer_email or task.reviewer_name
         if not key:
             continue
@@ -873,7 +928,7 @@ def get_calibrator_aggregation(
         if task.domain:
             calibrators[key]["domains"].add(task.domain)
         
-        # Status counts
+        # Status counts (exclude rework - we'll add from rework_tasks)
         if task.status == 'draft':
             calibrators[key]["draft_count"] += 1
         elif task.status == 'pending_review':
@@ -886,10 +941,38 @@ def get_calibrator_aggregation(
             calibrators[key]["in_calibrator_review_count"] += 1
         elif task.status == 'in_pod_lead_review':
             calibrators[key]["in_pod_lead_review_count"] += 1
-        elif task.status == 'rework':
-            calibrators[key]["rework_count"] += 1
         elif task.status == 'approved':
             calibrators[key]["approved_count"] += 1
+    
+    # Add rework tasks sent by each calibrator
+    for task in rework_tasks:
+        key = task.rework_by_email or task.rework_by_name
+        if not key:
+            continue
+        
+        if key not in calibrators:
+            calibrators[key] = {
+                "calibrator_email": task.rework_by_email,
+                "calibrator_name": task.rework_by_name,
+                "total_tasks": 0,
+                "draft_count": 0,
+                "pending_review_count": 0,
+                "in_expert_review_count": 0,
+                "pending_calibrator_review_count": 0,
+                "in_calibrator_review_count": 0,
+                "in_pod_lead_review_count": 0,
+                "rework_count": 0,
+                "approved_count": 0,
+                "trainers": set(),
+                "domains": set()
+            }
+        
+        calibrators[key]["rework_count"] += 1
+        calibrators[key]["total_tasks"] += 1
+        if task.trainer_email:
+            calibrators[key]["trainers"].add(task.trainer_email)
+        if task.domain:
+            calibrators[key]["domains"].add(task.domain)
     
     # Convert sets to counts and calculate metrics
     result = []
@@ -898,10 +981,12 @@ def get_calibrator_aggregation(
         approved = data["approved_count"]
         rework = data["rework_count"]
         
+        reviewed = approved + rework  # Tasks that have been reviewed (decision made)
         result.append({
             "calibrator_email": data["calibrator_email"],
             "calibrator_name": data["calibrator_name"],
             "total_tasks": total,
+            "reviewed_count": reviewed,  # NEW: Approved + Rework = tasks reviewed
             "draft_count": data["draft_count"],
             "pending_review_count": data["pending_review_count"],
             "in_expert_review_count": data["in_expert_review_count"],
@@ -915,8 +1000,8 @@ def get_calibrator_aggregation(
                 data["pending_calibrator_review_count"] + data["in_calibrator_review_count"] +
                 data["in_pod_lead_review_count"]
             ),
-            "approval_rate": approved / total if total > 0 else 0,
-            "rework_rate": rework / total if total > 0 else 0,
+            "approval_rate": approved / reviewed if reviewed > 0 else 0,  # Changed: based on reviewed tasks
+            "rework_rate": rework / reviewed if reviewed > 0 else 0,  # Changed: based on reviewed tasks
             "trainer_count": len(data["trainers"]),
             "domain_count": len(data["domains"])
         })
@@ -939,18 +1024,29 @@ def get_expert_reviewer_aggregation(
     """Get task statistics aggregated by Expert Reviewer"""
     from sqlalchemy import or_
     
-    # Filter tasks that have either expert_reviewer_email OR expert_reviewer_name
+    # Get tasks where expert reviewer is assigned (for non-rework tasks)
     query = db.query(Task).filter(
         or_(Task.expert_reviewer_email.isnot(None), Task.expert_reviewer_name.isnot(None))
     )
     if domain:
         query = query.filter(Task.domain == domain)
+    tasks_with_expert = query.all()
     
-    tasks = query.all()
+    # Get ALL tasks that were ever sent to rework BY an expert reviewer
+    # (regardless of current status - task may have been fixed and approved)
+    rework_query = db.query(Task).filter(
+        Task.rework_by_role == 'expert_reviewer',
+        or_(Task.rework_by_email.isnot(None), Task.rework_by_name.isnot(None))
+    )
+    if domain:
+        rework_query = rework_query.filter(Task.domain == domain)
+    rework_tasks = rework_query.all()
     
-    # Group by Expert Reviewer (use email as key, fall back to name if no email)
+    # Group by Expert Reviewer
     expert_reviewers = {}
-    for task in tasks:
+    
+    # Process tasks with expert reviewer assigned
+    for task in tasks_with_expert:
         key = task.expert_reviewer_email or task.expert_reviewer_name
         if not key:
             continue
@@ -978,7 +1074,7 @@ def get_expert_reviewer_aggregation(
         if task.domain:
             expert_reviewers[key]["domains"].add(task.domain)
         
-        # Status counts
+        # Status counts (exclude rework - we'll add from rework_tasks)
         if task.status == 'draft':
             expert_reviewers[key]["draft_count"] += 1
         elif task.status == 'pending_review':
@@ -991,10 +1087,38 @@ def get_expert_reviewer_aggregation(
             expert_reviewers[key]["in_calibrator_review_count"] += 1
         elif task.status == 'in_pod_lead_review':
             expert_reviewers[key]["in_pod_lead_review_count"] += 1
-        elif task.status == 'rework':
-            expert_reviewers[key]["rework_count"] += 1
         elif task.status == 'approved':
             expert_reviewers[key]["approved_count"] += 1
+    
+    # Add rework tasks sent by each expert reviewer
+    for task in rework_tasks:
+        key = task.rework_by_email or task.rework_by_name
+        if not key:
+            continue
+        
+        if key not in expert_reviewers:
+            expert_reviewers[key] = {
+                "expert_reviewer_email": task.rework_by_email,
+                "expert_reviewer_name": task.rework_by_name,
+                "total_tasks": 0,
+                "draft_count": 0,
+                "pending_review_count": 0,
+                "in_expert_review_count": 0,
+                "pending_calibrator_review_count": 0,
+                "in_calibrator_review_count": 0,
+                "in_pod_lead_review_count": 0,
+                "rework_count": 0,
+                "approved_count": 0,
+                "trainers": set(),
+                "domains": set()
+            }
+        
+        expert_reviewers[key]["rework_count"] += 1
+        expert_reviewers[key]["total_tasks"] += 1
+        if task.trainer_email:
+            expert_reviewers[key]["trainers"].add(task.trainer_email)
+        if task.domain:
+            expert_reviewers[key]["domains"].add(task.domain)
     
     # Convert sets to counts and calculate metrics
     result = []
@@ -1003,10 +1127,12 @@ def get_expert_reviewer_aggregation(
         approved = data["approved_count"]
         rework = data["rework_count"]
         
+        reviewed = approved + rework  # Tasks that have been reviewed (decision made)
         result.append({
             "expert_reviewer_email": data["expert_reviewer_email"],
             "expert_reviewer_name": data["expert_reviewer_name"],
             "total_tasks": total,
+            "reviewed_count": reviewed,  # NEW: Approved + Rework = tasks reviewed
             "draft_count": data["draft_count"],
             "pending_review_count": data["pending_review_count"],
             "in_expert_review_count": data["in_expert_review_count"],
@@ -1020,8 +1146,8 @@ def get_expert_reviewer_aggregation(
                 data["pending_calibrator_review_count"] + data["in_calibrator_review_count"] +
                 data["in_pod_lead_review_count"]
             ),
-            "approval_rate": approved / total if total > 0 else 0,
-            "rework_rate": rework / total if total > 0 else 0,
+            "approval_rate": approved / reviewed if reviewed > 0 else 0,  # Changed: based on reviewed tasks
+            "rework_rate": rework / reviewed if reviewed > 0 else 0,  # Changed: based on reviewed tasks
             "trainer_count": len(data["trainers"]),
             "domain_count": len(data["domains"])
         })
