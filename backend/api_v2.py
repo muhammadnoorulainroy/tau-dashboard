@@ -1243,67 +1243,90 @@ def get_weekly_time_tracking(
         if not people_data[turing_email]["person_name"]:
             people_data[turing_email]["person_name"] = person.full_name
     
-    # Get task metrics for each trainer
+    # Get task metrics using SQL aggregation (much faster than loading all tasks)
     # Build a lookup from lowercase turing email to original turing email in people_data
     turing_email_lookup = {email.lower(): email for email in people_data.keys()}
+    turing_email_set = set(turing_email_lookup.keys())
     
-    # Tasks created - query all tasks in the date range, then filter by email
-    tasks_created = db.query(Task).filter(
+    # Tasks created - aggregate by trainer_email and date using SQL
+    from sqlalchemy import func as sqlfunc, cast, Date
+    
+    tasks_created_agg = db.query(
+        sqlfunc.lower(Task.trainer_email).label('email'),
+        cast(Task.created_at, Date).label('date'),
+        sqlfunc.count().label('count'),
+        sqlfunc.max(Task.trainer_name).label('trainer_name')
+    ).filter(
         Task.trainer_email.isnot(None),
         Task.created_at >= start_of_week,
-        Task.created_at <= end_of_week
+        Task.created_at <= end_of_week,
+        sqlfunc.lower(Task.trainer_email).in_(turing_email_set)
+    ).group_by(
+        sqlfunc.lower(Task.trainer_email),
+        cast(Task.created_at, Date)
     ).all()
     
-    for task in tasks_created:
-        trainer_key = task.trainer_email.lower() if task.trainer_email else None
-        if trainer_key and trainer_key in turing_email_lookup:
+    for row in tasks_created_agg:
+        trainer_key = row.email
+        if trainer_key in turing_email_lookup:
             turing_email = turing_email_lookup[trainer_key]
-            date_str = task.created_at.strftime("%Y-%m-%d")
+            date_str = row.date.strftime("%Y-%m-%d")
             if date_str in people_data[turing_email]["daily_tasks_created"]:
-                people_data[turing_email]["daily_tasks_created"][date_str] += 1
-                people_data[turing_email]["total_tasks_created"] += 1
-            # Set person name from task if not set
-            if not people_data[turing_email]["person_name"] and task.trainer_name:
-                people_data[turing_email]["person_name"] = task.trainer_name
+                people_data[turing_email]["daily_tasks_created"][date_str] = row.count
+                people_data[turing_email]["total_tasks_created"] += row.count
+            if not people_data[turing_email]["person_name"] and row.trainer_name:
+                people_data[turing_email]["person_name"] = row.trainer_name
     
-    # Rework completed (trainer fixed their rework - task no longer in rework status)
-    rework_completed = db.query(Task).filter(
+    # Rework completed - aggregate by trainer_email and date
+    rework_completed_agg = db.query(
+        sqlfunc.lower(Task.trainer_email).label('email'),
+        cast(Task.updated_at, Date).label('date'),
+        sqlfunc.count().label('count')
+    ).filter(
         Task.trainer_email.isnot(None),
-        Task.status != 'rework',  # No longer in rework
-        Task.rework_by_email.isnot(None),  # Was in rework at some point
-        Task.updated_at >= start_of_week,
-        Task.updated_at <= end_of_week
-    ).all()
-    
-    for task in rework_completed:
-        trainer_key = task.trainer_email.lower() if task.trainer_email else None
-        if trainer_key and trainer_key in turing_email_lookup:
-            turing_email = turing_email_lookup[trainer_key]
-            date_str = task.updated_at.strftime("%Y-%m-%d")
-            if date_str in people_data[turing_email]["daily_rework_completed"]:
-                people_data[turing_email]["daily_rework_completed"][date_str] += 1
-                people_data[turing_email]["total_rework_completed"] += 1
-    
-    # Tasks reviewed (by pod leads, calibrators, expert reviewers)
-    # Only count 'approved' tasks as successfully reviewed
-    # This credits the pod_lead who gave final approval
-    approved_tasks = db.query(Task).filter(
+        Task.status != 'rework',
+        Task.rework_by_email.isnot(None),
         Task.updated_at >= start_of_week,
         Task.updated_at <= end_of_week,
-        Task.status == 'approved'
+        sqlfunc.lower(Task.trainer_email).in_(turing_email_set)
+    ).group_by(
+        sqlfunc.lower(Task.trainer_email),
+        cast(Task.updated_at, Date)
     ).all()
     
-    for task in approved_tasks:
-        date_str = task.updated_at.strftime("%Y-%m-%d")
-        
-        # Credit the pod lead who approved the task
-        if task.pod_lead_email:
-            reviewer_key = task.pod_lead_email.lower()
-            if reviewer_key in turing_email_lookup:
-                turing_email = turing_email_lookup[reviewer_key]
-                if date_str in people_data[turing_email]["daily_tasks_reviewed"]:
-                    people_data[turing_email]["daily_tasks_reviewed"][date_str] += 1
-                    people_data[turing_email]["total_tasks_reviewed"] += 1
+    for row in rework_completed_agg:
+        trainer_key = row.email
+        if trainer_key in turing_email_lookup:
+            turing_email = turing_email_lookup[trainer_key]
+            date_str = row.date.strftime("%Y-%m-%d")
+            if date_str in people_data[turing_email]["daily_rework_completed"]:
+                people_data[turing_email]["daily_rework_completed"][date_str] = row.count
+                people_data[turing_email]["total_rework_completed"] += row.count
+    
+    # Tasks reviewed - aggregate approved tasks by pod_lead_email and date
+    approved_tasks_agg = db.query(
+        sqlfunc.lower(Task.pod_lead_email).label('email'),
+        cast(Task.updated_at, Date).label('date'),
+        sqlfunc.count().label('count')
+    ).filter(
+        Task.pod_lead_email.isnot(None),
+        Task.updated_at >= start_of_week,
+        Task.updated_at <= end_of_week,
+        Task.status == 'approved',
+        sqlfunc.lower(Task.pod_lead_email).in_(turing_email_set)
+    ).group_by(
+        sqlfunc.lower(Task.pod_lead_email),
+        cast(Task.updated_at, Date)
+    ).all()
+    
+    for row in approved_tasks_agg:
+        reviewer_key = row.email
+        if reviewer_key in turing_email_lookup:
+            turing_email = turing_email_lookup[reviewer_key]
+            date_str = row.date.strftime("%Y-%m-%d")
+            if date_str in people_data[turing_email]["daily_tasks_reviewed"]:
+                people_data[turing_email]["daily_tasks_reviewed"][date_str] = row.count
+                people_data[turing_email]["total_tasks_reviewed"] += row.count
     
     # Fill in person names from email where missing
     for email, data in people_data.items():

@@ -110,18 +110,28 @@ function App() {
         
         // If sync complete, show success message
         if (data.type === 'sync_complete' && data.data) {
-          const { synced_count, sync_type } = data.data;
-          // Dismiss loading toast and show success
+          // Dismiss loading toast
           toast.dismiss('sync-progress');
           
-          if (sync_type === 'full') {
-            toast.success(`Full sync complete! Synced ${synced_count} tasks`, {
-              duration: 4000,
-            });
-          } else {
-            toast.success(`Sync complete! Updated ${synced_count} tasks`, {
+          // Handle both v1 (synced_count) and v2 (tasks, users, etc.) formats
+          const { synced_count, sync_type, tasks, users, batches } = data.data;
+          
+          if (tasks !== undefined) {
+            // V2 Task Agent sync format
+            toast.success(`Sync complete! ${tasks} tasks, ${users || 0} users, ${batches || 0} batches`, {
               duration: 3000,
             });
+          } else if (synced_count !== undefined) {
+            // V1 GitHub sync format
+            if (sync_type === 'full') {
+              toast.success(`Full sync complete! Synced ${synced_count} items`, {
+                duration: 4000,
+              });
+            } else {
+              toast.success(`Sync complete! Updated ${synced_count} items`, {
+                duration: 3000,
+              });
+            }
           }
         }
       }

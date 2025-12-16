@@ -1138,6 +1138,42 @@ def create_jibble_tables():
         return False
 
 
+def add_time_tracking_indexes():
+    """
+    Add indexes to optimize time tracking queries
+    """
+    try:
+        logger.info("Adding time tracking performance indexes...")
+        
+        with engine.connect() as connection:
+            indexes = [
+                ("idx_task_updated", "tasks", "updated_at"),
+                ("idx_task_trainer_created", "tasks", "trainer_email, created_at"),
+                ("idx_task_trainer_updated", "tasks", "trainer_email, updated_at"),
+                ("idx_task_podlead_updated", "tasks", "pod_lead_email, updated_at"),
+            ]
+            
+            for idx_name, table, columns in indexes:
+                result = connection.execute(text(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_indexes 
+                        WHERE indexname = '{idx_name}'
+                    )
+                """))
+                if not result.scalar():
+                    logger.info(f"Creating index {idx_name}...")
+                    connection.execute(text(f"CREATE INDEX {idx_name} ON {table}({columns})"))
+                    connection.commit()
+                    logger.info(f"  Created {idx_name}")
+        
+        logger.info(" Time tracking indexes ready")
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error creating time tracking indexes: {e}")
+        return False
+
+
 def run_migrations():
     """
     Run all database migrations
@@ -1212,6 +1248,9 @@ def run_migrations():
     
     # Create Jibble time tracking tables
     create_jibble_tables()
+    
+    # Add time tracking indexes for performance
+    add_time_tracking_indexes()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info(" DeveloperHierarchy table managed by SQLAlchemy ORM")

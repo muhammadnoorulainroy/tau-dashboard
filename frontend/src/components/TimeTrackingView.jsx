@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
 import { 
   ClockIcon, 
@@ -21,8 +21,25 @@ export default function TimeTrackingView() {
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [perPage, setPerPage] = useState(25);
+  
+  // Cache for prefetched weeks: { "offset_page_perPage_search": data }
+  const cacheRef = useRef({});
+
+  // Generate cache key
+  const getCacheKey = (offset, page, per, search) => 
+    `${offset}_${page}_${per}_${search || ''}`;
 
   const fetchData = useCallback(async () => {
+    const cacheKey = getCacheKey(weekOffset, currentPage, perPage, searchTerm);
+    
+    // Check cache first
+    if (cacheRef.current[cacheKey]) {
+      setData(cacheRef.current[cacheKey]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     try {
@@ -36,6 +53,12 @@ export default function TimeTrackingView() {
       }
       const response = await api.get('/v2/time-tracking/weekly', { params });
       setData(response.data);
+      
+      // Store in cache
+      cacheRef.current[cacheKey] = response.data;
+      
+      // Prefetch adjacent weeks (don't block UI)
+      prefetchAdjacentWeeks(weekOffset, currentPage, perPage, searchTerm);
     } catch (err) {
       setError(err.response?.data?.detail || err.message);
     } finally {
@@ -43,13 +66,40 @@ export default function TimeTrackingView() {
     }
   }, [weekOffset, searchTerm, currentPage, perPage]);
 
+  // Prefetch previous and next weeks in background
+  const prefetchAdjacentWeeks = async (offset, page, per, search) => {
+    const adjacentOffsets = [offset - 1]; // Only prefetch previous week (can't go to future)
+    if (offset < 0) adjacentOffsets.push(offset + 1); // Also prefetch next if not current
+    
+    for (const adjOffset of adjacentOffsets) {
+      const adjKey = getCacheKey(adjOffset, page, per, search);
+      if (!cacheRef.current[adjKey]) {
+        try {
+          const params = { week_offset: adjOffset, page, per_page: per };
+          if (search) params.trainer_email = search;
+          const response = await api.get('/v2/time-tracking/weekly', { params });
+          cacheRef.current[adjKey] = response.data;
+        } catch {
+          // Silently fail prefetch
+        }
+      }
+    }
+  };
+
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
+  // Clear cache when search term changes (invalidate all cached data)
+  useEffect(() => {
+    cacheRef.current = {};
+    setCurrentPage(1);
+  }, [searchTerm]);
+
+  // Reset page on week change (but keep cache)
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, weekOffset]);
+  }, [weekOffset]);
 
   const formatHours = (hours) => {
     if (!hours || hours === 0) return '-';

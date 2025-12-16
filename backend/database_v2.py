@@ -99,7 +99,12 @@ class Task(Base):
         Index('idx_task_domain_status', 'domain', 'status'),
         Index('idx_task_trainer', 'trainer_email'),
         Index('idx_task_created', 'created_at'),
+        Index('idx_task_updated', 'updated_at'),
         Index('idx_task_batch', 'batch_id'),
+        # Composite indexes for time tracking queries
+        Index('idx_task_trainer_created', 'trainer_email', 'created_at'),
+        Index('idx_task_trainer_updated', 'trainer_email', 'updated_at'),
+        Index('idx_task_podlead_updated', 'pod_lead_email', 'updated_at'),
     )
 
 
