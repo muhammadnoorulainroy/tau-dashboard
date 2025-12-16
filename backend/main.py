@@ -148,11 +148,13 @@ async def lifespan(app: FastAPI):
     # Start v2 background sync tasks (Task Agent)
     task_agent_sync_task = None
     v2_similarity_task = None
+    jibble_sync_task = None
     try:
-        from background_tasks_v2 import start_task_agent_sync, start_v2_similarity_calculation
+        from background_tasks_v2 import start_task_agent_sync, start_v2_similarity_calculation, start_jibble_sync
         task_agent_sync_task = asyncio.create_task(start_task_agent_sync(manager))
         v2_similarity_task = asyncio.create_task(start_v2_similarity_calculation())
-        logger.info("Task Agent background sync and similarity calculation tasks started")
+        jibble_sync_task = asyncio.create_task(start_jibble_sync())
+        logger.info("Task Agent background sync, similarity calculation, and Jibble sync tasks started")
     except ImportError as e:
         logger.warning(f"Background v2 sync module not available: {str(e)}")
     except Exception as e:
@@ -191,6 +193,15 @@ async def lifespan(app: FastAPI):
             await v2_similarity_task
         except asyncio.CancelledError:
             logger.info("V2 similarity task cancelled")
+    
+    # Cancel Jibble sync task
+    if jibble_sync_task:
+        logger.info("Cancelling Jibble sync task...")
+        jibble_sync_task.cancel()
+        try:
+            await jibble_sync_task
+        except asyncio.CancelledError:
+            logger.info("Jibble sync task cancelled")
     
     # Cancel all active manual sync tasks
     if active_sync_tasks:
@@ -255,12 +266,8 @@ async def authentication_middleware(request: Request, call_next):
         "/health"
     ]
     
-    # Check if path is public (including /api/v2/* for Task Agent API testing)
+    # Check if path is public
     if request.url.path in public_paths or not request.url.path.startswith("/api/"):
-        return await call_next(request)
-    
-    # Allow v2 endpoints during development (TODO: remove in production)
-    if request.url.path.startswith("/api/v2/"):
         return await call_next(request)
     
     # WebSocket connections don't use Bearer tokens in headers, skip for now

@@ -85,6 +85,18 @@ class Settings(BaseSettings):
     # Dynamic domain discovery settings
     enable_dynamic_domains: bool = True  # Set to False to use hardcoded list only
     last_domain_refresh: Optional[float] = None  # Timestamp of last refresh
+    
+    # Jibble API Configuration
+    jibble_client_id: Optional[str] = None
+    jibble_client_secret: Optional[str] = None
+    jibble_api_key: Optional[str] = None  # Alias for client_id
+    jibble_api_secret: Optional[str] = None  # Alias for client_secret
+    jibble_api_url: str = "https://workspace.prod.jibble.io/v1"
+    jibble_time_tracking_url: str = "https://time-tracking.prod.jibble.io/v1"
+    
+    # Jibble Email Mapping (Google Sheet with Turing Email -> Jibble Email)
+    jibble_email_sheet_url: str = "https://docs.google.com/spreadsheets/d/12WSKMXbzSMa0e5Jy0_xQK_eV5NF4Kn9v-PKQhqhxgQQ/edit"
+    jibble_email_sheet_range: str = "Sheet1!A:E"  # Email (A=0), Jibble Emails (E=4)
 
     @validator('database_url', always=True, pre=False)
     def construct_database_url(cls, v, values):

@@ -12,6 +12,7 @@ import logging
 from database_v2 import (
     get_db, Task, TaskAgentUser, Batch, Environment, 
     SyncStateV2, TaskEmbedding, TaskSimilarity, ActionEmbedding, ActionSimilarity,
+    JibblePerson, JibbleTimeEntry, JibbleEmailMapping,
     TASK_STATUSES, is_in_review
 )
 from schemas_v2 import (
@@ -1157,3 +1158,235 @@ def get_expert_reviewer_aggregation(
     
     return result
 
+
+# =============================================================================
+# TIME TRACKING (JIBBLE)
+# =============================================================================
+
+@router.get("/time-tracking/weekly")
+def get_weekly_time_tracking(
+    week_offset: int = Query(0, ge=-52, le=0, description="Week offset (0=current, -1=last week)"),
+    trainer_email: Optional[str] = Query(None, description="Filter by trainer email or name"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=10, le=100),
+    db: Session = Depends(get_db)
+):
+    """
+    Get weekly time tracking data for trainers
+    Includes Jibble hours + task metrics (created, rework, reviewed)
+    """
+    from datetime import timedelta
+    from collections import defaultdict
+    
+    # Calculate week boundaries (Monday to Sunday)
+    # First get to start of current week, then apply week_offset
+    today = datetime.now()
+    start_of_current_week = today - timedelta(days=today.weekday())
+    start_of_current_week = start_of_current_week.replace(hour=0, minute=0, second=0, microsecond=0)
+    # week_offset is 0 or negative, so adding it goes back in time
+    start_of_week = start_of_current_week + timedelta(weeks=week_offset)
+    end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+    
+    # ISO week string
+    iso_year, iso_week, _ = start_of_week.isocalendar()
+    iso_week_str = f"{iso_year}-W{iso_week:02d}"
+    
+    # Get all email mappings (defines who should be shown)
+    # Maps: jibble_email (lowercase) -> turing_email, and turing_email (lowercase) -> jibble_email
+    email_mappings = db.query(JibbleEmailMapping).all()
+    allowed_emails = {m.jibble_email.lower(): m.turing_email for m in email_mappings}
+    turing_emails = {m.turing_email.lower(): m.jibble_email for m in email_mappings}
+    
+    # Initialize people data from email mappings
+    people_data = {}
+    for mapping in email_mappings:
+        people_data[mapping.turing_email] = {
+            "turing_email": mapping.turing_email,
+            "jibble_email": mapping.jibble_email,
+            "person_name": None,
+            "daily_hours": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0.0 for i in range(7)},
+            "daily_tasks_created": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0 for i in range(7)},
+            "daily_rework_completed": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0 for i in range(7)},
+            "daily_tasks_reviewed": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0 for i in range(7)},
+            "total_hours": 0.0,
+            "total_tasks_created": 0,
+            "total_rework_completed": 0,
+            "total_tasks_reviewed": 0,
+        }
+    
+    # Get Jibble time entries for this week
+    time_entries = db.query(JibbleTimeEntry, JibblePerson).join(
+        JibblePerson, JibbleTimeEntry.person_id == JibblePerson.jibble_id
+    ).filter(
+        JibbleTimeEntry.entry_date >= start_of_week,
+        JibbleTimeEntry.entry_date <= end_of_week
+    ).all()
+    
+    # Process time entries
+    for entry, person in time_entries:
+        jibble_email = person.personal_email or person.work_email
+        if not jibble_email or jibble_email.lower() not in allowed_emails:
+            continue
+        
+        turing_email = allowed_emails[jibble_email.lower()]
+        if turing_email not in people_data:
+            continue
+        
+        date_str = entry.entry_date.strftime("%Y-%m-%d")
+        hours = entry.total_hours or 0.0
+        
+        if date_str in people_data[turing_email]["daily_hours"]:
+            people_data[turing_email]["daily_hours"][date_str] = hours
+            people_data[turing_email]["total_hours"] += hours
+        
+        # Set person name
+        if not people_data[turing_email]["person_name"]:
+            people_data[turing_email]["person_name"] = person.full_name
+    
+    # Get task metrics for each trainer
+    # Build a lookup from lowercase turing email to original turing email in people_data
+    turing_email_lookup = {email.lower(): email for email in people_data.keys()}
+    
+    # Tasks created - query all tasks in the date range, then filter by email
+    tasks_created = db.query(Task).filter(
+        Task.trainer_email.isnot(None),
+        Task.created_at >= start_of_week,
+        Task.created_at <= end_of_week
+    ).all()
+    
+    for task in tasks_created:
+        trainer_key = task.trainer_email.lower() if task.trainer_email else None
+        if trainer_key and trainer_key in turing_email_lookup:
+            turing_email = turing_email_lookup[trainer_key]
+            date_str = task.created_at.strftime("%Y-%m-%d")
+            if date_str in people_data[turing_email]["daily_tasks_created"]:
+                people_data[turing_email]["daily_tasks_created"][date_str] += 1
+                people_data[turing_email]["total_tasks_created"] += 1
+            # Set person name from task if not set
+            if not people_data[turing_email]["person_name"] and task.trainer_name:
+                people_data[turing_email]["person_name"] = task.trainer_name
+    
+    # Rework completed (trainer fixed their rework - task no longer in rework status)
+    rework_completed = db.query(Task).filter(
+        Task.trainer_email.isnot(None),
+        Task.status != 'rework',  # No longer in rework
+        Task.rework_by_email.isnot(None),  # Was in rework at some point
+        Task.updated_at >= start_of_week,
+        Task.updated_at <= end_of_week
+    ).all()
+    
+    for task in rework_completed:
+        trainer_key = task.trainer_email.lower() if task.trainer_email else None
+        if trainer_key and trainer_key in turing_email_lookup:
+            turing_email = turing_email_lookup[trainer_key]
+            date_str = task.updated_at.strftime("%Y-%m-%d")
+            if date_str in people_data[turing_email]["daily_rework_completed"]:
+                people_data[turing_email]["daily_rework_completed"][date_str] += 1
+                people_data[turing_email]["total_rework_completed"] += 1
+    
+    # Tasks reviewed (by pod leads, calibrators, expert reviewers)
+    # Only count 'approved' tasks as successfully reviewed
+    # This credits the pod_lead who gave final approval
+    approved_tasks = db.query(Task).filter(
+        Task.updated_at >= start_of_week,
+        Task.updated_at <= end_of_week,
+        Task.status == 'approved'
+    ).all()
+    
+    for task in approved_tasks:
+        date_str = task.updated_at.strftime("%Y-%m-%d")
+        
+        # Credit the pod lead who approved the task
+        if task.pod_lead_email:
+            reviewer_key = task.pod_lead_email.lower()
+            if reviewer_key in turing_email_lookup:
+                turing_email = turing_email_lookup[reviewer_key]
+                if date_str in people_data[turing_email]["daily_tasks_reviewed"]:
+                    people_data[turing_email]["daily_tasks_reviewed"][date_str] += 1
+                    people_data[turing_email]["total_tasks_reviewed"] += 1
+    
+    # Fill in person names from email where missing
+    for email, data in people_data.items():
+        if not data["person_name"]:
+            # Try to derive from email
+            name_part = email.split("@")[0]
+            data["person_name"] = name_part.replace(".", " ").title()
+    
+    # Convert to list and apply filtering
+    trainers = list(people_data.values())
+    
+    # Filter by trainer_email/name if provided
+    if trainer_email:
+        search_lower = trainer_email.lower()
+        trainers = [
+            t for t in trainers 
+            if search_lower in (t["turing_email"] or "").lower() 
+            or search_lower in (t["jibble_email"] or "").lower()
+            or search_lower in (t["person_name"] or "").lower()
+        ]
+    
+    # Sort by total hours descending
+    trainers.sort(key=lambda t: t["total_hours"], reverse=True)
+    
+    # Pagination
+    total = len(trainers)
+    total_pages = (total + per_page - 1) // per_page
+    offset = (page - 1) * per_page
+    trainers_page = trainers[offset:offset + per_page]
+    
+    # Calculate totals
+    total_hours = sum(t["total_hours"] for t in trainers)
+    total_created = sum(t["total_tasks_created"] for t in trainers)
+    total_rework = sum(t["total_rework_completed"] for t in trainers)
+    total_reviewed = sum(t["total_tasks_reviewed"] for t in trainers)
+    
+    return {
+        "week": iso_week_str,
+        "start_date": start_of_week.date().isoformat(),
+        "end_date": end_of_week.date().isoformat(),
+        "trainers": trainers_page,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "summary": {
+            "total_hours": round(total_hours, 2),
+            "total_tasks_created": total_created,
+            "total_rework_completed": total_rework,
+            "total_tasks_reviewed": total_reviewed,
+            "active_trainers": len([t for t in trainers if t["total_hours"] > 0]),
+        }
+    }
+
+
+@router.post("/time-tracking/sync")
+def sync_time_tracking(
+    weeks: int = Query(2, ge=1, le=8, description="Number of weeks to sync"),
+    db: Session = Depends(get_db)
+):
+    """Sync Jibble time tracking data"""
+    from jibble_sync_service import JibbleSyncService
+    
+    try:
+        sync_service = JibbleSyncService(db)
+        result = sync_service.full_sync(weeks=weeks)
+        return result
+    except Exception as e:
+        logger.error(f"Time tracking sync failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/time-tracking/test")
+def test_jibble_connection():
+    """Test Jibble API connection"""
+    from jibble_service import JibbleService
+    
+    try:
+        service = JibbleService()
+        return service.test_connection()
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Connection test failed: {str(e)}",
+            "has_token": False,
+        }

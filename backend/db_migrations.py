@@ -1040,6 +1040,104 @@ def create_action_similarity_table():
         return False
 
 
+def create_jibble_tables():
+    """
+    Create Jibble time tracking tables for storing people and time entries
+    """
+    try:
+        logger.info("Checking for Jibble tables...")
+        
+        with engine.connect() as connection:
+            # Create jibble_people table
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'jibble_people'
+                )
+            """))
+            if not result.scalar():
+                logger.info("Creating jibble_people table...")
+                connection.execute(text("""
+                    CREATE TABLE jibble_people (
+                        id SERIAL PRIMARY KEY,
+                        jibble_id VARCHAR UNIQUE NOT NULL,
+                        full_name VARCHAR,
+                        first_name VARCHAR,
+                        last_name VARCHAR,
+                        personal_email VARCHAR,
+                        work_email VARCHAR,
+                        status VARCHAR,
+                        latest_time_entry TIMESTAMPTZ,
+                        last_synced TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                connection.execute(text("CREATE INDEX idx_jibble_people_jibble_id ON jibble_people(jibble_id)"))
+                connection.execute(text("CREATE INDEX idx_jibble_people_personal_email ON jibble_people(personal_email)"))
+                connection.execute(text("CREATE INDEX idx_jibble_people_work_email ON jibble_people(work_email)"))
+                connection.commit()
+                logger.info(" Created jibble_people table")
+            else:
+                logger.info(" jibble_people table already exists")
+            
+            # Create jibble_time_entries table
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'jibble_time_entries'
+                )
+            """))
+            if not result.scalar():
+                logger.info("Creating jibble_time_entries table...")
+                connection.execute(text("""
+                    CREATE TABLE jibble_time_entries (
+                        id SERIAL PRIMARY KEY,
+                        person_id VARCHAR NOT NULL,
+                        entry_date TIMESTAMPTZ NOT NULL,
+                        total_hours REAL DEFAULT 0.0,
+                        clock_in_time TIMESTAMPTZ,
+                        clock_out_time TIMESTAMPTZ,
+                        last_synced TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                        CONSTRAINT uq_jibble_person_date UNIQUE (person_id, entry_date)
+                    )
+                """))
+                connection.execute(text("CREATE INDEX idx_jibble_time_person_date ON jibble_time_entries(person_id, entry_date)"))
+                connection.commit()
+                logger.info(" Created jibble_time_entries table")
+            else:
+                logger.info(" jibble_time_entries table already exists")
+            
+            # Create jibble_email_mappings table
+            result = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'jibble_email_mappings'
+                )
+            """))
+            if not result.scalar():
+                logger.info("Creating jibble_email_mappings table...")
+                connection.execute(text("""
+                    CREATE TABLE jibble_email_mappings (
+                        id SERIAL PRIMARY KEY,
+                        turing_email VARCHAR UNIQUE NOT NULL,
+                        jibble_email VARCHAR NOT NULL,
+                        last_synced TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                connection.execute(text("CREATE INDEX idx_jibble_email_turing ON jibble_email_mappings(turing_email)"))
+                connection.execute(text("CREATE INDEX idx_jibble_email_jibble ON jibble_email_mappings(jibble_email)"))
+                connection.commit()
+                logger.info(" Created jibble_email_mappings table")
+            else:
+                logger.info(" jibble_email_mappings table already exists")
+        
+        logger.info(" Jibble tables ready")
+        return True
+        
+    except Exception as e:
+        logger.error(f" Error creating Jibble tables: {e}")
+        return False
+
+
 def run_migrations():
     """
     Run all database migrations
@@ -1111,6 +1209,9 @@ def run_migrations():
     
     # Add folder tracking columns for revert/rework detection
     add_pr_folder_tracking_columns()
+    
+    # Create Jibble time tracking tables
+    create_jibble_tables()
     
     # Note: DeveloperHierarchy table is created by init_db() via SQLAlchemy Base.metadata.create_all()
     logger.info(" DeveloperHierarchy table managed by SQLAlchemy ORM")

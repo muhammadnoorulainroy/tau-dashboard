@@ -7,7 +7,8 @@ import {
   DocumentTextIcon,
   SparklesIcon,
   ArchiveBoxIcon,
-  ChartBarIcon
+  ChartBarIcon,
+  ClockIcon
 } from '@heroicons/react/24/outline';
 
 const navigation = [
@@ -15,6 +16,7 @@ const navigation = [
   { name: 'Tasks', path: '/tasks', icon: DocumentTextIcon },
   { name: 'Trainers', path: '/trainers', icon: UserGroupIcon },
   { name: 'Reviewers', path: '/reviewers', icon: ChartBarIcon },
+  { name: 'Time Tracking', path: '/time-tracking', icon: ClockIcon },
   { name: 'Environments', path: '/environments', icon: FolderIcon },
   { name: 'Batches', path: '/batches', icon: ArchiveBoxIcon },
   { name: 'Task Similarity', path: '/task-similarity', icon: SparklesIcon },

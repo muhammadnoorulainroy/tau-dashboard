@@ -295,6 +295,80 @@ class ActionSimilarity(Base):
 
 
 # =============================================================================
+# JIBBLE TIME TRACKING MODELS
+# =============================================================================
+
+class JibblePerson(Base):
+    """
+    Person/Employee from Jibble API
+    Maps to: GET /People
+    """
+    __tablename__ = "jibble_people"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Jibble identifiers
+    jibble_id = Column(String, unique=True, nullable=False, index=True)
+    
+    # Personal info
+    full_name = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    personal_email = Column(String, nullable=True, index=True)  # Jibble personal email
+    work_email = Column(String, nullable=True, index=True)
+    
+    # Status
+    status = Column(String, nullable=True)  # Active, etc.
+    
+    # Latest activity
+    latest_time_entry = Column(DateTime(timezone=True), nullable=True)
+    
+    # Sync tracking
+    last_synced = Column(DateTime(timezone=True), default=func.now())
+
+
+class JibbleTimeEntry(Base):
+    """
+    Daily time entry summary for a person
+    Aggregated from TimeEntries endpoint
+    """
+    __tablename__ = "jibble_time_entries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Person reference
+    person_id = Column(String, index=True, nullable=False)  # Jibble person ID
+    
+    # Date
+    entry_date = Column(DateTime(timezone=True), nullable=False, index=True)
+    
+    # Time data
+    total_hours = Column(Float, default=0.0)
+    clock_in_time = Column(DateTime(timezone=True), nullable=True)
+    clock_out_time = Column(DateTime(timezone=True), nullable=True)
+    
+    # Sync tracking
+    last_synced = Column(DateTime(timezone=True), default=func.now())
+    
+    __table_args__ = (
+        UniqueConstraint('person_id', 'entry_date', name='uq_jibble_person_date'),
+        Index('idx_jibble_time_person_date', 'person_id', 'entry_date'),
+    )
+
+
+class JibbleEmailMapping(Base):
+    """
+    Stores the mapping between Turing email and Jibble personal email from Google Sheets.
+    """
+    __tablename__ = "jibble_email_mappings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    turing_email = Column(String, unique=True, nullable=False, index=True)
+    jibble_email = Column(String, nullable=False, index=True)
+    last_synced = Column(DateTime(timezone=True), default=func.now())
+
+
+# =============================================================================
 # SYNC STATE
 # =============================================================================
 

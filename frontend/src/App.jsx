@@ -11,6 +11,7 @@ import TasksView from './components/TasksView';
 import BatchesView from './components/BatchesView';
 import TaskSimilarityView from './components/TaskSimilarityView';
 import AggregationView from './components/AggregationView';
+import TimeTrackingView from './components/TimeTrackingView';
 import Login from './components/Login';
 import ProtectedRoute from './components/ProtectedRoute';
 import { connectWebSocket, getDashboardOverview } from './services/api';
@@ -23,7 +24,7 @@ function MainLayout({ children, sidebarOpen, setSidebarOpen, lastUpdate, user, o
   const location = useLocation();
   
   // Determine if current route should have full page scroll or not
-  const fullScrollRoutes = ['/dashboard', '/environments', '/task-similarity', '/batches', '/reviewers', '/tasks', '/trainers'];
+  const fullScrollRoutes = ['/dashboard', '/environments', '/task-similarity', '/batches', '/reviewers', '/tasks', '/trainers', '/time-tracking'];
   const isFullScroll = fullScrollRoutes.includes(location.pathname);
   
   return (
@@ -308,6 +309,24 @@ function App() {
                     onLogout={handleLogout}
                   >
                     <TaskSimilarityView lastUpdate={lastUpdate} />
+                  </MainLayout>
+                </ProtectedRoute>
+              }
+            />
+            
+            {/* Time Tracking */}
+            <Route
+              path="/time-tracking"
+              element={
+                <ProtectedRoute isAuthenticated={isAuthenticated}>
+                  <MainLayout
+                    sidebarOpen={sidebarOpen}
+                    setSidebarOpen={setSidebarOpen}
+                    lastUpdate={lastUpdate}
+                    user={user}
+                    onLogout={handleLogout}
+                  >
+                    <TimeTrackingView lastUpdate={lastUpdate} />
                   </MainLayout>
                 </ProtectedRoute>
               }

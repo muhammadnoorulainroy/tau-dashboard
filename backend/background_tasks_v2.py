@@ -13,6 +13,9 @@ SYNC_INTERVAL = 600
 # Similarity calculation interval in seconds (30 minutes)
 SIMILARITY_INTERVAL = 1800
 
+# Jibble sync interval in seconds (1 hour)
+JIBBLE_SYNC_INTERVAL = 3600
+
 
 async def start_task_agent_sync(manager=None):
     """
@@ -165,4 +168,56 @@ async def run_initial_sync():
         logger.error(f"Error checking/running initial sync: {e}")
     finally:
         db.close()
+
+
+async def start_jibble_sync():
+    """
+    Background task that periodically syncs Jibble time tracking data.
+    Runs every hour to keep time entries up to date.
+    """
+    logger.info("Starting Jibble time tracking background sync task")
+    
+    # Wait 2 minutes before first run to let other services initialize
+    await asyncio.sleep(120)
+    
+    while True:
+        try:
+            logger.info("=" * 60)
+            logger.info("Running scheduled Jibble time tracking sync")
+            logger.info("=" * 60)
+            
+            from database_v2 import SessionLocal, init_db_v2
+            from jibble_sync_service import JibbleSyncService
+            
+            def run_jibble_sync():
+                init_db_v2()
+                db = SessionLocal()
+                try:
+                    service = JibbleSyncService(db)
+                    # Sync current week and last week (2 weeks)
+                    result = service.full_sync(weeks=2)
+                    return result
+                except Exception as e:
+                    logger.error(f"Jibble sync error: {e}")
+                    return None
+                finally:
+                    db.close()
+            
+            # Run in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, run_jibble_sync)
+            
+            if result:
+                logger.info(f"Jibble sync complete: {result.get('time_entries_synced', 0)} entries, "
+                           f"{result.get('people_synced', 0)} people")
+            
+            # Wait for next interval
+            await asyncio.sleep(JIBBLE_SYNC_INTERVAL)
+            
+        except asyncio.CancelledError:
+            logger.info("Jibble sync task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in Jibble sync task: {e}")
+            await asyncio.sleep(300)  # Wait 5 minutes before retrying
 
