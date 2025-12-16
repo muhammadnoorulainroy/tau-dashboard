@@ -1214,17 +1214,33 @@ def get_weekly_time_tracking(
             "total_tasks_reviewed": 0,
         }
     
-    # Get Jibble time entries for this week
-    time_entries = db.query(JibbleTimeEntry, JibblePerson).join(
+    # Get Jibble time entries for this week - aggregate by person and DATE to avoid timezone duplicates
+    from sqlalchemy import func as sqlfunc, cast, Date
+    
+    # Use aggregation to get one row per person+date, taking MAX hours (in case of duplicates)
+    time_entries_agg = db.query(
+        JibblePerson.personal_email,
+        JibblePerson.work_email,
+        JibblePerson.full_name,
+        cast(JibbleTimeEntry.entry_date, Date).label('entry_day'),
+        sqlfunc.max(JibbleTimeEntry.total_hours).label('total_hours')  # MAX to handle duplicates
+    ).join(
         JibblePerson, JibbleTimeEntry.person_id == JibblePerson.jibble_id
     ).filter(
         JibbleTimeEntry.entry_date >= start_of_week,
         JibbleTimeEntry.entry_date <= end_of_week
+    ).group_by(
+        JibblePerson.jibble_id,
+        JibblePerson.personal_email,
+        JibblePerson.work_email,
+        JibblePerson.full_name,
+        cast(JibbleTimeEntry.entry_date, Date)
     ).all()
     
     # Process time entries
-    for entry, person in time_entries:
-        jibble_email = person.personal_email or person.work_email
+    for row in time_entries_agg:
+        personal_email, work_email, full_name, entry_day, hours = row
+        jibble_email = personal_email or work_email
         if not jibble_email or jibble_email.lower() not in allowed_emails:
             continue
         
@@ -1232,8 +1248,8 @@ def get_weekly_time_tracking(
         if turing_email not in people_data:
             continue
         
-        date_str = entry.entry_date.strftime("%Y-%m-%d")
-        hours = entry.total_hours or 0.0
+        date_str = entry_day.strftime("%Y-%m-%d")
+        hours = hours or 0.0
         
         if date_str in people_data[turing_email]["daily_hours"]:
             people_data[turing_email]["daily_hours"][date_str] = hours
@@ -1241,7 +1257,7 @@ def get_weekly_time_tracking(
         
         # Set person name
         if not people_data[turing_email]["person_name"]:
-            people_data[turing_email]["person_name"] = person.full_name
+            people_data[turing_email]["person_name"] = full_name
     
     # Get task metrics using SQL aggregation (much faster than loading all tasks)
     # Build a lookup from lowercase turing email to original turing email in people_data

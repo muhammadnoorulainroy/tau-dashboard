@@ -229,12 +229,16 @@ class JibbleSyncService:
                         continue
                     
                     try:
-                        entry_date = datetime.fromisoformat(date_str)
+                        # Parse date string to date object (no timezone issues)
+                        entry_date_obj = datetime.fromisoformat(date_str).date()
+                        # Store as midnight UTC for consistency
+                        entry_date = datetime.combine(entry_date_obj, datetime.min.time())
                         
-                        # Try to find existing entry
-                        existing = self.db.query(JibbleTimeEntry).filter_by(
-                            person_id=person_id,
-                            entry_date=entry_date
+                        # Try to find existing entry using DATE comparison to avoid timezone issues
+                        from sqlalchemy import cast, Date
+                        existing = self.db.query(JibbleTimeEntry).filter(
+                            JibbleTimeEntry.person_id == person_id,
+                            cast(JibbleTimeEntry.entry_date, Date) == entry_date_obj
                         ).first()
                         
                         if existing:
@@ -252,10 +256,11 @@ class JibbleSyncService:
                         
                     except IntegrityError:
                         self.db.rollback()
-                        # Update existing
-                        existing = self.db.query(JibbleTimeEntry).filter_by(
-                            person_id=person_id,
-                            entry_date=entry_date
+                        # Update existing using DATE comparison
+                        from sqlalchemy import cast, Date
+                        existing = self.db.query(JibbleTimeEntry).filter(
+                            JibbleTimeEntry.person_id == person_id,
+                            cast(JibbleTimeEntry.entry_date, Date) == entry_date_obj
                         ).first()
                         if existing:
                             existing.total_hours = hours
