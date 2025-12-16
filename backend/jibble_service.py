@@ -1,11 +1,18 @@
 """
 Jibble API Service - Handles authentication and API calls to Jibble
 """
+import os
 import logging
 import requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
-from config import settings
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables (same pattern as task_agent_service.py)
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
 
 logger = logging.getLogger(__name__)
 
@@ -14,13 +21,21 @@ class JibbleService:
     """Service for interacting with Jibble API"""
     
     def __init__(self):
-        # Support both naming conventions
-        self.client_id = settings.jibble_client_id or settings.jibble_api_key
-        self.client_secret = settings.jibble_client_secret or settings.jibble_api_secret
-        self.base_url = settings.jibble_api_url
-        self.time_tracking_url = settings.jibble_time_tracking_url
+        # Load credentials from environment
+        # Primary: JIBBLE_API_KEY / JIBBLE_API_SECRET
+        # Fallback: JIBBLE_CLIENT_ID / JIBBLE_CLIENT_SECRET
+        self.client_id = os.getenv("JIBBLE_API_KEY") or os.getenv("JIBBLE_CLIENT_ID")
+        self.client_secret = os.getenv("JIBBLE_API_SECRET") or os.getenv("JIBBLE_CLIENT_SECRET")
+        self.base_url = os.getenv("JIBBLE_API_URL", "https://workspace.prod.jibble.io/v1")
+        self.time_tracking_url = os.getenv("JIBBLE_TIME_TRACKING_URL", "https://time-tracking.prod.jibble.io/v1")
         self.access_token: Optional[str] = None
         self.token_expires_at: Optional[datetime] = None
+        
+        # Log credential status on init (without revealing secrets)
+        if self.client_id and self.client_secret:
+            logger.info(f"Jibble credentials configured (client_id: {self.client_id[:8]}...)")
+        else:
+            logger.warning("Jibble credentials not configured - set JIBBLE_API_KEY and JIBBLE_API_SECRET in .env")
     
     def _get_access_token(self) -> str:
         """Get OAuth2 access token using client credentials flow"""

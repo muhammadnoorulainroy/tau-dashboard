@@ -1,9 +1,12 @@
 """
 Jibble Sync Service - Syncs Jibble data to the local database
 """
+import os
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
+from pathlib import Path
+from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -11,7 +14,17 @@ from sqlalchemy.exc import IntegrityError
 from jibble_service import JibbleService
 from database_v2 import JibblePerson, JibbleTimeEntry, JibbleEmailMapping
 from google_sheets_service import GoogleSheetsService
-from config import settings
+
+# Load environment variables (same pattern as task_agent_service.py)
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+
+# Default Jibble email sheet URL
+JIBBLE_EMAIL_SHEET_URL = os.getenv(
+    "JIBBLE_EMAIL_SHEET_URL", 
+    "https://docs.google.com/spreadsheets/d/12WSKMXbzSMa0e5Jy0_xQK_eV5NF4Kn9v-PKQhqhxgQQ/edit"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +47,8 @@ class JibbleSyncService:
             sheets_service = GoogleSheetsService()
             sheets_service.connect()
             
-            # Open the spreadsheet (sheet2_url with Email and Jibble Emails columns)
-            spreadsheet = sheets_service.client.open_by_url(settings.jibble_email_sheet_url)
+            # Open the spreadsheet (sheet with Email and Jibble Emails columns)
+            spreadsheet = sheets_service.client.open_by_url(JIBBLE_EMAIL_SHEET_URL)
             worksheet = spreadsheet.worksheet("Sheet1")
             
             # Get all values

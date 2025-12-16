@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, validator
 from typing import Optional, List
 from datetime import datetime, timezone
@@ -86,17 +86,10 @@ class Settings(BaseSettings):
     enable_dynamic_domains: bool = True  # Set to False to use hardcoded list only
     last_domain_refresh: Optional[float] = None  # Timestamp of last refresh
     
-    # Jibble API Configuration
-    jibble_client_id: Optional[str] = None
-    jibble_client_secret: Optional[str] = None
-    jibble_api_key: Optional[str] = None  # Alias for client_id
-    jibble_api_secret: Optional[str] = None  # Alias for client_secret
-    jibble_api_url: str = "https://workspace.prod.jibble.io/v1"
-    jibble_time_tracking_url: str = "https://time-tracking.prod.jibble.io/v1"
-    
-    # Jibble Email Mapping (Google Sheet with Turing Email -> Jibble Email)
-    jibble_email_sheet_url: str = "https://docs.google.com/spreadsheets/d/12WSKMXbzSMa0e5Jy0_xQK_eV5NF4Kn9v-PKQhqhxgQQ/edit"
-    jibble_email_sheet_range: str = "Sheet1!A:E"  # Email (A=0), Jibble Emails (E=4)
+    # Note: Jibble API credentials are loaded directly via os.getenv() in jibble_service.py
+    # for consistency with task_agent_service.py. Set these env vars:
+    # - JIBBLE_API_KEY
+    # - JIBBLE_API_SECRET
 
     @validator('database_url', always=True, pre=False)
     def construct_database_url(cls, v, values):
@@ -119,11 +112,15 @@ class Settings(BaseSettings):
         # Default to localhost for development
         return "postgresql://postgres:postgres@localhost:5432/tau_dashboard"
     
-    class Config:
-        env_file = ".env.dev"
-        env_file_encoding = 'utf-8'
-        # Allow extra fields for flexibility
-        extra = 'allow'
+    # Use model_config for pydantic v2
+    # Priority: Environment variables > .env > .env.production > .env.dev
+    model_config = SettingsConfigDict(
+        env_file=('.env', '.env.production', '.env.dev'),
+        env_file_encoding='utf-8',
+        extra='allow',
+        # Allow population by field name or alias
+        populate_by_name=True,
+    )
 
 settings = Settings()
 
