@@ -101,9 +101,18 @@ export default function TimeTrackingView() {
     setCurrentPage(1);
   }, [weekOffset]);
 
-  const formatHours = (hours) => {
+  const formatHours = (hours, short = false) => {
     if (!hours || hours === 0) return '-';
-    return hours.toFixed(1) + 'h';
+    const h = Math.floor(hours);
+    const m = Math.round((hours - h) * 60);
+    if (short) {
+      // Short format for table cells: "8h" or "8h 30m"
+      if (m === 0) return `${h}h`;
+      return `${h}h ${m}m`;
+    }
+    // Full format
+    if (m === 0) return `${h}h`;
+    return `${h}h ${m}m`;
   };
 
   const getHoursColor = (hours) => {
@@ -191,7 +200,7 @@ export default function TimeTrackingView() {
 
       {/* Summary Stats */}
       {data?.summary && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
           <div className="card">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-blue-100 rounded-lg">
@@ -199,7 +208,7 @@ export default function TimeTrackingView() {
               </div>
               <div>
                 <div className="text-sm text-gray-500">Total Hours</div>
-                <div className="text-2xl font-bold text-gray-900">{data.summary.total_hours}h</div>
+                <div className="text-2xl font-bold text-gray-900">{formatHours(data.summary.total_hours)}</div>
               </div>
             </div>
           </div>
@@ -233,6 +242,17 @@ export default function TimeTrackingView() {
               <div>
                 <div className="text-sm text-gray-500">Tasks Reviewed</div>
                 <div className="text-2xl font-bold text-gray-900">{data.summary.total_tasks_reviewed}</div>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-100 rounded-lg">
+                <CheckCircleIcon className="h-6 w-6 text-emerald-600" />
+              </div>
+              <div>
+                <div className="text-sm text-gray-500">Tasks Approved</div>
+                <div className="text-2xl font-bold text-gray-900">{data.summary.total_tasks_approved || 0}</div>
               </div>
             </div>
           </div>
@@ -386,8 +406,8 @@ export default function TimeTrackingView() {
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className={`font-bold text-lg ${getHoursColor(trainer.total_hours)}`}>
+                  <td className="px-4 py-3 text-center whitespace-nowrap">
+                    <span className={`font-semibold text-sm ${getHoursColor(trainer.total_hours)}`}>
                       {formatHours(trainer.total_hours)}
                     </span>
                   </td>

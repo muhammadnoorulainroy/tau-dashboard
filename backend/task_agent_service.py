@@ -388,10 +388,13 @@ class TaskAgentService:
         tasks = self.fetch_all_tasks()
         count = 0
         updated = 0
+        details_fetched = 0
         
         # Build email lookup if not provided
         if name_email_lookup is None:
             name_email_lookup = self.build_name_to_email_lookup(db)
+        
+        logger.info(f"Processing {len(tasks)} tasks (fetch_details={fetch_details})...")
         
         for i, task_data in enumerate(tasks):
             task_agent_id = task_data["id"]
@@ -505,11 +508,32 @@ class TaskAgentService:
                 else:
                     task.tool_sequence = task_data["tool_sequence"]
             
-            # Fetch full details if needed (for instruction_text and tool_sequence)
-            needs_details = not task.instruction_text or not task.tool_sequence or not task.task_history
+            # Fetch full details if needed (for instruction_text, tool_sequence, and task_history)
+            # IMPORTANT: task_history is dynamic and changes as tasks go through reviews
+            needs_instruction = not task.instruction_text
+            needs_tool_sequence = not task.tool_sequence
+            needs_history = not task.task_history
+            
+            # Refresh task_history for tasks in ACTIVE review states where new events may have occurred
+            # These are the only states where review events can be added:
+            # - Tasks waiting for or in any review stage
+            # - Tasks in rework (may be resubmitted)
+            # Draft and approved tasks are stable and don't need refresh
+            active_review_states = [
+                'pending_review',      # Waiting for expert review
+                'in_expert_review',    # Being reviewed by expert
+                'pending_calibrator_review',  # Waiting for calibrator
+                'in_calibrator_review',  # Being reviewed by calibrator
+                'in_pod_lead_review',  # Being reviewed by POD lead
+                'rework'               # May have review events from rejection
+            ]
+            needs_history_refresh = task.status in active_review_states
+            
+            needs_details = needs_instruction or needs_tool_sequence or needs_history or needs_history_refresh
             if fetch_details and needs_details:
-                if (i + 1) % 10 == 0:
-                    logger.info(f"Fetching details for task {i + 1}/{len(tasks)}...")
+                details_fetched += 1
+                if details_fetched % 50 == 0:
+                    logger.info(f"Fetching details: {details_fetched} tasks processed (current: {i + 1}/{len(tasks)})...")
                 
                 detail = self.fetch_task_detail(task_agent_id)
                 if detail:
@@ -576,7 +600,7 @@ class TaskAgentService:
                 db.commit()
         
         db.commit()
-        logger.info(f"Synced tasks: {count} new, {updated} updated")
+        logger.info(f"Synced tasks: {count} new, {updated} updated, {details_fetched} details fetched")
         return count + updated
     
     def update_environment_stats(self, db: Session) -> None:

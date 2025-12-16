@@ -1208,10 +1208,12 @@ def get_weekly_time_tracking(
             "daily_tasks_created": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0 for i in range(7)},
             "daily_rework_completed": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0 for i in range(7)},
             "daily_tasks_reviewed": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0 for i in range(7)},
+            "daily_tasks_approved": {(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d"): 0 for i in range(7)},
             "total_hours": 0.0,
             "total_tasks_created": 0,
             "total_rework_completed": 0,
             "total_tasks_reviewed": 0,
+            "total_tasks_approved": 0,
         }
     
     # Get Jibble time entries for this week - aggregate by person and DATE to avoid timezone duplicates
@@ -1293,56 +1295,197 @@ def get_weekly_time_tracking(
             if not people_data[turing_email]["person_name"] and row.trainer_name:
                 people_data[turing_email]["person_name"] = row.trainer_name
     
-    # Rework completed - aggregate by trainer_email and date
-    rework_completed_agg = db.query(
-        sqlfunc.lower(Task.trainer_email).label('email'),
-        cast(Task.updated_at, Date).label('date'),
-        sqlfunc.count().label('count')
-    ).filter(
-        Task.trainer_email.isnot(None),
-        Task.status != 'rework',
-        Task.rework_by_email.isnot(None),
-        Task.updated_at >= start_of_week,
-        Task.updated_at <= end_of_week,
-        sqlfunc.lower(Task.trainer_email).in_(turing_email_set)
-    ).group_by(
-        sqlfunc.lower(Task.trainer_email),
-        cast(Task.updated_at, Date)
+    # Rework completed and Approved tasks - use task_history for accuracy
+    # A rework is "completed" when a trainer submits a task after starting rework
+    # A task is "approved" when both_reviews_completed or task_approved_by_calibrator event occurs
+    
+    # Build name-to-email lookup for trainer attribution
+    from database_v2 import TaskAgentUser
+    users = db.query(TaskAgentUser).filter(
+        TaskAgentUser.email.isnot(None),
+        TaskAgentUser.name.isnot(None)
+    ).all()
+    name_to_email_trainer = {u.name.lower().strip(): u.email.lower() for u in users if u.name and u.email}
+    
+    # Fetch all tasks with task_history
+    tasks_with_history = db.query(Task).filter(
+        Task.task_history.isnot(None)
     ).all()
     
-    for row in rework_completed_agg:
-        trainer_key = row.email
-        if trainer_key in turing_email_lookup:
-            turing_email = turing_email_lookup[trainer_key]
-            date_str = row.date.strftime("%Y-%m-%d")
-            if date_str in people_data[turing_email]["daily_rework_completed"]:
-                people_data[turing_email]["daily_rework_completed"][date_str] = row.count
-                people_data[turing_email]["total_rework_completed"] += row.count
+    # Track rework completions and approvals
+    rework_by_email_date = {}  # {email: {date_str: count}}
+    approved_by_email_date = {}  # {email: {date_str: count}}
     
-    # Tasks reviewed - aggregate approved tasks by pod_lead_email and date
-    approved_tasks_agg = db.query(
-        sqlfunc.lower(Task.pod_lead_email).label('email'),
-        cast(Task.updated_at, Date).label('date'),
-        sqlfunc.count().label('count')
-    ).filter(
-        Task.pod_lead_email.isnot(None),
-        Task.updated_at >= start_of_week,
-        Task.updated_at <= end_of_week,
-        Task.status == 'approved',
-        sqlfunc.lower(Task.pod_lead_email).in_(turing_email_set)
-    ).group_by(
-        sqlfunc.lower(Task.pod_lead_email),
-        cast(Task.updated_at, Date)
-    ).all()
+    # Track which tasks have been counted to avoid double-counting
+    approved_tasks_counted = set()  # {(task_id, date_str)}
     
-    for row in approved_tasks_agg:
-        reviewer_key = row.email
-        if reviewer_key in turing_email_lookup:
-            turing_email = turing_email_lookup[reviewer_key]
-            date_str = row.date.strftime("%Y-%m-%d")
-            if date_str in people_data[turing_email]["daily_tasks_reviewed"]:
-                people_data[turing_email]["daily_tasks_reviewed"][date_str] = row.count
-                people_data[turing_email]["total_tasks_reviewed"] += row.count
+    # Make week boundaries timezone-aware for comparison with task_history timestamps
+    from datetime import timezone as tz
+    start_of_week_utc = start_of_week.replace(tzinfo=tz.utc)
+    end_of_week_utc = end_of_week.replace(tzinfo=tz.utc)
+    
+    for task in tasks_with_history:
+        if not task.task_history:
+            continue
+        
+        task_trainer_email = (task.trainer_email or "").lower()
+        if not task_trainer_email or task_trainer_email not in turing_email_lookup:
+            continue
+        
+        # Sort events by time
+        events = sorted(task.task_history, key=lambda x: x.get('created_at', ''))
+        
+        in_rework = False
+        
+        for event in events:
+            event_type = event.get('event', '').lower()
+            created_at = event.get('created_at', '')
+            
+            # Track rework state
+            if event_type == 'task_started_rework':
+                in_rework = True
+            
+            # Rework completed = task_submitted while in rework state
+            if event_type == 'task_submitted' and in_rework:
+                try:
+                    event_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    if start_of_week_utc <= event_date <= end_of_week_utc:
+                        date_str = event_date.strftime("%Y-%m-%d")
+                        if task_trainer_email not in rework_by_email_date:
+                            rework_by_email_date[task_trainer_email] = {}
+                        if date_str not in rework_by_email_date[task_trainer_email]:
+                            rework_by_email_date[task_trainer_email][date_str] = 0
+                        rework_by_email_date[task_trainer_email][date_str] += 1
+                except Exception as e:
+                    logger.debug(f"Error parsing rework event date: {e}")
+                in_rework = False
+            
+            # Approved = both_reviews_completed or task_approved_by_calibrator
+            # Only count ONCE per task per day (avoid double-counting multiple approval events)
+            if event_type in ['both_reviews_completed', 'task_approved_by_calibrator']:
+                try:
+                    event_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    if start_of_week_utc <= event_date <= end_of_week_utc:
+                        date_str = event_date.strftime("%Y-%m-%d")
+                        
+                        # Check if this task was already counted as approved this week
+                        task_key = (task.task_agent_id, task_trainer_email)
+                        if task_key in approved_tasks_counted:
+                            continue  # Skip - already counted
+                        approved_tasks_counted.add(task_key)
+                        
+                        if task_trainer_email not in approved_by_email_date:
+                            approved_by_email_date[task_trainer_email] = {}
+                        if date_str not in approved_by_email_date[task_trainer_email]:
+                            approved_by_email_date[task_trainer_email][date_str] = 0
+                        approved_by_email_date[task_trainer_email][date_str] += 1
+                except Exception as e:
+                    logger.debug(f"Error parsing approval event date: {e}")
+    
+    # Apply rework counts to people_data
+    for email, daily_counts in rework_by_email_date.items():
+        if email in turing_email_lookup:
+            turing_email = turing_email_lookup[email]
+            for date_str, count in daily_counts.items():
+                if date_str in people_data[turing_email]["daily_rework_completed"]:
+                    people_data[turing_email]["daily_rework_completed"][date_str] = count
+                    people_data[turing_email]["total_rework_completed"] += count
+    
+    # Apply approved counts to people_data
+    for email, daily_counts in approved_by_email_date.items():
+        if email in turing_email_lookup:
+            turing_email = turing_email_lookup[email]
+            for date_str, count in daily_counts.items():
+                if date_str in people_data[turing_email]["daily_tasks_approved"]:
+                    people_data[turing_email]["daily_tasks_approved"][date_str] = count
+                    people_data[turing_email]["total_tasks_approved"] += count
+    
+    # Tasks reviewed - count from task_history events
+    # Review events that count as "+1 review":
+    # - Expert Reviewer: expert_review_completed (approved), task_sent_to_rework_by_expert (rejected)
+    # - POD Lead: pod_lead_review_completed (approved), task_sent_to_rework_by_pod_lead (rejected)
+    #   NOTE: both_reviews_completed is NOT counted separately - it's a status change, not a review action
+    #         It fires automatically when POD Lead completes (if Expert already done)
+    # - Calibrator: task_approved_by_calibrator (approved), task_sent_to_rework_by_calibrator (rejected)
+    
+    REVIEW_EVENTS = {
+        'expert_review_completed': 'expert_reviewer',
+        'task_sent_to_rework_by_expert': 'expert_reviewer',
+        'pod_lead_review_completed': 'pod_lead',
+        'task_sent_to_rework_by_pod_lead': 'pod_lead',
+        'task_approved_by_calibrator': 'calibrator',
+        'task_sent_to_rework_by_calibrator': 'calibrator',
+    }
+    
+    # Reuse name_to_email_trainer from rework/approved section above
+    name_to_email = name_to_email_trainer
+    
+    # Parse task_history to count reviews (reuse tasks_with_history from above)
+    reviews_by_email_date = {}  # {email: {date_str: count}}
+    
+    for task in tasks_with_history:
+        if not task.task_history:
+            continue
+        
+        for event in task.task_history:
+            event_type = event.get('event', '').lower()
+            initiated_by = event.get('initiated_by', '')
+            created_at = event.get('created_at', '')
+            
+            # Check if this is a review event
+            if event_type not in REVIEW_EVENTS:
+                continue
+            
+            # Parse event date
+            if not created_at:
+                continue
+            try:
+                event_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                # Check if event is within our week range (using UTC-aware comparison)
+                if event_date < start_of_week_utc or event_date > end_of_week_utc:
+                    continue
+                event_date_str = event_date.strftime("%Y-%m-%d")
+            except Exception as e:
+                logger.debug(f"Error parsing review event date: {e}")
+                continue
+            
+            # Get reviewer email from name
+            reviewer_email = None
+            if initiated_by:
+                reviewer_email = name_to_email.get(initiated_by.lower().strip())
+            
+            # If we couldn't find email by name, try to get from task fields based on role
+            if not reviewer_email:
+                role = REVIEW_EVENTS[event_type]
+                if role == 'expert_reviewer' and task.expert_reviewer_email:
+                    reviewer_email = task.expert_reviewer_email.lower()
+                elif role == 'pod_lead' and task.pod_lead_email:
+                    reviewer_email = task.pod_lead_email.lower()
+                elif role == 'calibrator' and task.reviewer_email:
+                    reviewer_email = task.reviewer_email.lower()
+            
+            if not reviewer_email:
+                continue
+            
+            # Check if this reviewer is in our allowed list
+            if reviewer_email not in turing_email_lookup:
+                continue
+            
+            # Count the review
+            if reviewer_email not in reviews_by_email_date:
+                reviews_by_email_date[reviewer_email] = {}
+            if event_date_str not in reviews_by_email_date[reviewer_email]:
+                reviews_by_email_date[reviewer_email][event_date_str] = 0
+            reviews_by_email_date[reviewer_email][event_date_str] += 1
+    
+    # Apply review counts to people_data
+    for reviewer_email, daily_counts in reviews_by_email_date.items():
+        if reviewer_email in turing_email_lookup:
+            turing_email = turing_email_lookup[reviewer_email]
+            for date_str, count in daily_counts.items():
+                if date_str in people_data[turing_email]["daily_tasks_reviewed"]:
+                    people_data[turing_email]["daily_tasks_reviewed"][date_str] = count
+                    people_data[turing_email]["total_tasks_reviewed"] += count
     
     # Fill in person names from email where missing
     for email, data in people_data.items():
@@ -1378,6 +1521,7 @@ def get_weekly_time_tracking(
     total_created = sum(t["total_tasks_created"] for t in trainers)
     total_rework = sum(t["total_rework_completed"] for t in trainers)
     total_reviewed = sum(t["total_tasks_reviewed"] for t in trainers)
+    total_approved = sum(t["total_tasks_approved"] for t in trainers)
     
     return {
         "week": iso_week_str,
@@ -1393,6 +1537,7 @@ def get_weekly_time_tracking(
             "total_tasks_created": total_created,
             "total_rework_completed": total_rework,
             "total_tasks_reviewed": total_reviewed,
+            "total_tasks_approved": total_approved,
             "active_trainers": len([t for t in trainers if t["total_hours"] > 0]),
         }
     }

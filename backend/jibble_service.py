@@ -267,12 +267,14 @@ class JibbleService:
                 total_duration = entry.get("total", "PT0S")
                 total_hours = self.parse_iso8601_duration(total_duration)
                 
-                # Parse daily breakdown
+                # Parse daily breakdown - use payrollHours (actual working hours after breaks)
+                # instead of tracked (total time from first clock-in to last clock-out)
                 daily_data = entry.get("daily", [])
                 for day in daily_data:
                     date_str = day.get("date")
-                    tracked = day.get("tracked", "PT0S")
-                    hours = self.parse_iso8601_duration(tracked)
+                    # Use payrollHours for actual billable hours, fall back to tracked if not available
+                    payroll = day.get("payrollHours") or day.get("tracked", "PT0S")
+                    hours = self.parse_iso8601_duration(payroll)
                     
                     if date_str:
                         daily_hours[person_id][date_str] = hours
