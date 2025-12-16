@@ -177,6 +177,7 @@ class JibbleSyncService:
     def sync_time_entries(self, weeks: int = 2) -> Tuple[int, List[Dict]]:
         """
         Sync time entries from Jibble for the specified number of weeks
+        Uses the TimesheetsSummary endpoint for pre-calculated daily hours
         
         Returns: (total_entries_synced, weeks_synced_details)
         """
@@ -188,14 +189,13 @@ class JibbleSyncService:
             allowed_mapping = self.get_allowed_jibble_emails()
             allowed_emails = set(allowed_mapping.keys())
             
-            # Create person email lookup
+            # Create person_id -> email lookup from JibblePerson table
             people = self.db.query(JibblePerson).all()
-            email_to_person = {}
+            person_id_to_email = {}
             for p in people:
-                if p.personal_email:
-                    email_to_person[p.personal_email.lower()] = p
-                if p.work_email:
-                    email_to_person[p.work_email.lower()] = p
+                email = p.personal_email or p.work_email
+                if email:
+                    person_id_to_email[p.jibble_id] = email.lower()
             
             # Sync each week
             for week_offset in range(weeks + 1):
@@ -211,27 +211,26 @@ class JibbleSyncService:
                 
                 logger.info(f"Syncing time entries for {iso_week_str} ({start_of_week.date()} to {end_of_week.date()})")
                 
-                # Fetch time entries
-                entries = self.jibble.get_time_entries(start_of_week, end_of_week)
-                
-                # Calculate daily hours
-                daily_hours = self.jibble.calculate_daily_hours(entries)
+                # Fetch pre-calculated daily hours from TimesheetsSummary
+                daily_hours = self.jibble.get_timesheets_summary(start_of_week, end_of_week)
                 
                 week_entries = 0
                 
-                for person_id, dates in daily_hours.items():
-                    # Get person and check if allowed
-                    person = self.db.query(JibblePerson).filter_by(jibble_id=person_id).first()
-                    
-                    if not person:
-                        continue
-                    
+                for person_id, data in daily_hours.items():
                     # Check if person's email is in allowed list
-                    person_email = person.personal_email or person.work_email
-                    if person_email and person_email.lower() not in allowed_emails:
+                    person_email = person_id_to_email.get(person_id)
+                    if not person_email or person_email not in allowed_emails:
                         continue
                     
-                    for date_str, hours in dates.items():
+                    for date_str, hours in data.items():
+                        # Skip metadata keys
+                        if date_str.startswith("_"):
+                            continue
+                        
+                        # Skip zero hours entries (optional - keeps db smaller)
+                        if hours == 0:
+                            continue
+                        
                         try:
                             entry_date = datetime.fromisoformat(date_str)
                             

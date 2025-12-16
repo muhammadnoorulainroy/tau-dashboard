@@ -2,6 +2,7 @@
 Jibble API Service - Handles authentication and API calls to Jibble
 """
 import os
+import re
 import logging
 import requests
 from datetime import datetime, timedelta
@@ -28,6 +29,8 @@ class JibbleService:
         self.client_secret = os.getenv("JIBBLE_API_SECRET") or os.getenv("JIBBLE_CLIENT_SECRET")
         self.base_url = os.getenv("JIBBLE_API_URL", "https://workspace.prod.jibble.io/v1")
         self.time_tracking_url = os.getenv("JIBBLE_TIME_TRACKING_URL", "https://time-tracking.prod.jibble.io/v1")
+        # New: Time attendance URL for TimesheetsSummary endpoint
+        self.time_attendance_url = os.getenv("JIBBLE_TIME_ATTENDANCE_URL", "https://time-attendance.prod.jibble.io/v1")
         self.access_token: Optional[str] = None
         self.token_expires_at: Optional[datetime] = None
         
@@ -185,6 +188,108 @@ class JibbleService:
         
         logger.info(f"Fetched {len(all_entries)} total time entries for {start_date.date()} to {end_date.date()}")
         return all_entries
+    
+    @staticmethod
+    def parse_iso8601_duration(duration_str: str) -> float:
+        """
+        Parse ISO 8601 duration string to hours
+        Examples: "PT9H59M55.6207655S" -> 9.998... hours
+                  "P1D" -> 24 hours
+                  "P2DT8H" -> 56 hours
+        """
+        if not duration_str or duration_str == "PT0S":
+            return 0.0
+        
+        total_seconds = 0.0
+        
+        # Match days (P1D, P2D, etc)
+        days_match = re.search(r'(\d+)D', duration_str)
+        if days_match:
+            total_seconds += int(days_match.group(1)) * 24 * 3600
+        
+        # Match hours (T8H, etc)
+        hours_match = re.search(r'(\d+)H', duration_str)
+        if hours_match:
+            total_seconds += int(hours_match.group(1)) * 3600
+        
+        # Match minutes (30M, etc)
+        minutes_match = re.search(r'(\d+)M', duration_str)
+        if minutes_match:
+            total_seconds += int(minutes_match.group(1)) * 60
+        
+        # Match seconds (55.123S, etc)
+        seconds_match = re.search(r'([\d.]+)S', duration_str)
+        if seconds_match:
+            total_seconds += float(seconds_match.group(1))
+        
+        return round(total_seconds / 3600, 2)
+    
+    def get_timesheets_summary(self, start_date: datetime, end_date: datetime, 
+                                person_ids: List[str] = None) -> Dict[str, Dict[str, float]]:
+        """
+        Fetch pre-calculated daily hours from TimesheetsSummary endpoint
+        This is more reliable than calculating from clock in/out events
+        
+        URL: https://time-attendance.prod.jibble.io/v1/TimesheetsSummary
+        
+        Returns: {person_id: {date_str: total_hours}}
+        """
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+        
+        params = {
+            "period": "Custom",
+            "date": start_str,
+            "endDate": end_str,
+        }
+        
+        # Add person IDs if specified (can add multiple with same key)
+        # For now, we'll fetch all and filter later if needed
+        
+        try:
+            data = self._make_request("TimesheetsSummary", params=params, 
+                                      base_url=self.time_attendance_url)
+            
+            results = data.get("value", [])
+            logger.info(f"Fetched timesheets summary for {len(results)} people ({start_str} to {end_str})")
+            
+            # Parse results into {person_id: {date: hours}}
+            daily_hours = {}
+            
+            for entry in results:
+                person_id = entry.get("personId")
+                if not person_id:
+                    continue
+                
+                daily_hours[person_id] = {}
+                
+                # Parse total (for reference)
+                total_duration = entry.get("total", "PT0S")
+                total_hours = self.parse_iso8601_duration(total_duration)
+                
+                # Parse daily breakdown
+                daily_data = entry.get("daily", [])
+                for day in daily_data:
+                    date_str = day.get("date")
+                    tracked = day.get("tracked", "PT0S")
+                    hours = self.parse_iso8601_duration(tracked)
+                    
+                    if date_str:
+                        daily_hours[person_id][date_str] = hours
+                
+                # Store total in a special key for convenience
+                daily_hours[person_id]["_total"] = total_hours
+                
+                # Store person info
+                person_info = entry.get("person", {})
+                daily_hours[person_id]["_name"] = person_info.get("fullName", "")
+            
+            return daily_hours
+            
+        except Exception as e:
+            logger.error(f"Error fetching timesheets summary: {e}")
+            # Fall back to empty result
+            return {}
     
     def calculate_daily_hours(self, time_entries: List[Dict]) -> Dict[str, Dict[str, float]]:
         """
