@@ -174,16 +174,27 @@ class JibbleSyncService:
             self.db.rollback()
             raise
     
-    def sync_time_entries(self, weeks: int = 2) -> Tuple[int, List[Dict]]:
+    def sync_time_entries_for_month(self) -> Tuple[int, Dict]:
         """
-        Sync time entries from Jibble for the specified number of weeks
-        Uses the TimesheetsSummary endpoint for pre-calculated daily hours
+        Sync time entries from Jibble for the current month only.
+        Uses the TimesheetsSummary endpoint for pre-calculated daily hours.
         
-        Returns: (total_entries_synced, weeks_synced_details)
+        Returns: (total_entries_synced, month_details)
         """
         try:
-            total_synced = 0
-            weeks_details = []
+            # Calculate current month boundaries
+            today = datetime.now()
+            start_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            # End of month - go to next month day 1, then subtract 1 day
+            if today.month == 12:
+                end_of_month = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
+            else:
+                end_of_month = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+            end_of_month = end_of_month.replace(hour=23, minute=59, second=59)
+            
+            month_str = start_of_month.strftime("%Y-%m")
+            logger.info(f"Syncing time entries for {month_str} ({start_of_month.date()} to {end_of_month.date()})")
             
             # Get allowed emails for filtering
             allowed_mapping = self.get_allowed_jibble_emails()
@@ -197,97 +208,82 @@ class JibbleSyncService:
                 if email:
                     person_id_to_email[p.jibble_id] = email.lower()
             
-            # Sync each week
-            for week_offset in range(weeks + 1):
-                # Calculate week boundaries (Monday to Sunday)
-                today = datetime.now()
-                start_of_week = today - timedelta(days=today.weekday() + week_offset * 7)
-                start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+            # Fetch pre-calculated daily hours from TimesheetsSummary for the entire month
+            daily_hours = self.jibble.get_timesheets_summary(start_of_month, end_of_month)
+            
+            total_synced = 0
+            
+            for person_id, data in daily_hours.items():
+                # Check if person's email is in allowed list
+                person_email = person_id_to_email.get(person_id)
+                if not person_email or person_email not in allowed_emails:
+                    continue
                 
-                # Calculate ISO week
-                iso_year, iso_week, _ = start_of_week.isocalendar()
-                iso_week_str = f"{iso_year}-W{iso_week:02d}"
-                
-                logger.info(f"Syncing time entries for {iso_week_str} ({start_of_week.date()} to {end_of_week.date()})")
-                
-                # Fetch pre-calculated daily hours from TimesheetsSummary
-                daily_hours = self.jibble.get_timesheets_summary(start_of_week, end_of_week)
-                
-                week_entries = 0
-                
-                for person_id, data in daily_hours.items():
-                    # Check if person's email is in allowed list
-                    person_email = person_id_to_email.get(person_id)
-                    if not person_email or person_email not in allowed_emails:
+                for date_str, hours in data.items():
+                    # Skip metadata keys
+                    if date_str.startswith("_"):
                         continue
                     
-                    for date_str, hours in data.items():
-                        # Skip metadata keys
-                        if date_str.startswith("_"):
-                            continue
+                    # Skip zero hours entries (keeps db smaller)
+                    if hours == 0:
+                        continue
+                    
+                    try:
+                        entry_date = datetime.fromisoformat(date_str)
                         
-                        # Skip zero hours entries (optional - keeps db smaller)
-                        if hours == 0:
-                            continue
+                        # Try to find existing entry
+                        existing = self.db.query(JibbleTimeEntry).filter_by(
+                            person_id=person_id,
+                            entry_date=entry_date
+                        ).first()
                         
-                        try:
-                            entry_date = datetime.fromisoformat(date_str)
-                            
-                            # Try to find existing entry
-                            existing = self.db.query(JibbleTimeEntry).filter_by(
+                        if existing:
+                            existing.total_hours = hours
+                            existing.last_synced = func.now()
+                        else:
+                            new_entry = JibbleTimeEntry(
                                 person_id=person_id,
-                                entry_date=entry_date
-                            ).first()
-                            
-                            if existing:
-                                existing.total_hours = hours
-                                existing.last_synced = func.now()
-                            else:
-                                new_entry = JibbleTimeEntry(
-                                    person_id=person_id,
-                                    entry_date=entry_date,
-                                    total_hours=hours,
-                                )
-                                self.db.add(new_entry)
-                            
-                            week_entries += 1
-                            
-                        except IntegrityError:
-                            self.db.rollback()
-                            # Update existing
-                            existing = self.db.query(JibbleTimeEntry).filter_by(
-                                person_id=person_id,
-                                entry_date=entry_date
-                            ).first()
-                            if existing:
-                                existing.total_hours = hours
-                                existing.last_synced = func.now()
-                        except Exception as e:
-                            logger.warning(f"Error saving entry for {person_id}/{date_str}: {e}")
-                            continue
-                
-                self.db.commit()
-                total_synced += week_entries
-                
-                weeks_details.append({
-                    "iso_week": iso_week_str,
-                    "start": start_of_week.date().isoformat(),
-                    "end": end_of_week.date().isoformat(),
-                    "entries": week_entries,
-                })
+                                entry_date=entry_date,
+                                total_hours=hours,
+                            )
+                            self.db.add(new_entry)
+                        
+                        total_synced += 1
+                        
+                    except IntegrityError:
+                        self.db.rollback()
+                        # Update existing
+                        existing = self.db.query(JibbleTimeEntry).filter_by(
+                            person_id=person_id,
+                            entry_date=entry_date
+                        ).first()
+                        if existing:
+                            existing.total_hours = hours
+                            existing.last_synced = func.now()
+                    except Exception as e:
+                        logger.warning(f"Error saving entry for {person_id}/{date_str}: {e}")
+                        continue
             
-            logger.info(f"Synced {total_synced} time entries across {len(weeks_details)} weeks")
-            return total_synced, weeks_details
+            self.db.commit()
+            
+            month_details = {
+                "month": month_str,
+                "start": start_of_month.date().isoformat(),
+                "end": end_of_month.date().isoformat(),
+                "entries": total_synced,
+            }
+            
+            logger.info(f"Synced {total_synced} time entries for {month_str}")
+            return total_synced, month_details
             
         except Exception as e:
             logger.error(f"Error syncing time entries: {e}")
             self.db.rollback()
             raise
     
-    def full_sync(self, weeks: int = 2) -> Dict:
+    def full_sync(self) -> Dict:
         """
-        Perform a full sync of all Jibble data
+        Perform a full sync of all Jibble data for the current month.
         
         Returns: sync results summary
         """
@@ -300,16 +296,16 @@ class JibbleSyncService:
             logger.info("Step 2: Syncing people from Jibble...")
             people_count = self.sync_people()
             
-            # Finally sync time entries
-            logger.info(f"Step 3: Syncing time entries for {weeks} weeks...")
-            entries_count, weeks_details = self.sync_time_entries(weeks)
+            # Finally sync time entries for current month
+            logger.info("Step 3: Syncing time entries for current month...")
+            entries_count, month_details = self.sync_time_entries_for_month()
             
             return {
                 "success": True,
                 "email_mappings_synced": email_mappings,
                 "people_synced": people_count,
                 "time_entries_synced": entries_count,
-                "weeks_synced": weeks_details,
+                "month_synced": month_details,
                 "error": None,
             }
             
@@ -320,7 +316,7 @@ class JibbleSyncService:
                 "email_mappings_synced": 0,
                 "people_synced": 0,
                 "time_entries_synced": 0,
-                "weeks_synced": [],
+                "month_synced": None,
                 "error": str(e),
             }
 

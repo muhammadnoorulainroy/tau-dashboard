@@ -13,8 +13,8 @@ SYNC_INTERVAL = 600
 # Similarity calculation interval in seconds (30 minutes)
 SIMILARITY_INTERVAL = 1800
 
-# Jibble sync interval in seconds (1 hour)
-JIBBLE_SYNC_INTERVAL = 3600
+# Jibble sync interval in seconds (15 minutes)
+JIBBLE_SYNC_INTERVAL = 900
 
 
 async def start_task_agent_sync(manager=None):
@@ -174,8 +174,10 @@ async def start_jibble_sync():
     """
     Background task that periodically syncs Jibble time tracking data.
     Runs every hour to keep time entries up to date.
+    Syncs current month data only.
     """
     logger.info("Starting Jibble time tracking background sync task")
+    logger.info("Sync strategy: Current month only (hourly refresh)")
     
     # Wait 2 minutes before first run to let other services initialize
     await asyncio.sleep(120)
@@ -183,7 +185,7 @@ async def start_jibble_sync():
     while True:
         try:
             logger.info("=" * 60)
-            logger.info("Running scheduled Jibble time tracking sync")
+            logger.info("Running scheduled Jibble time tracking sync (current month)")
             logger.info("=" * 60)
             
             from database_v2 import SessionLocal, init_db_v2
@@ -194,8 +196,8 @@ async def start_jibble_sync():
                 db = SessionLocal()
                 try:
                     service = JibbleSyncService(db)
-                    # Sync current week and last week (2 weeks)
-                    result = service.full_sync(weeks=2)
+                    # Sync current month only
+                    result = service.full_sync()
                     return result
                 except Exception as e:
                     logger.error(f"Jibble sync error: {e}")
@@ -208,8 +210,10 @@ async def start_jibble_sync():
             result = await loop.run_in_executor(None, run_jibble_sync)
             
             if result:
+                month_info = result.get('month_synced', {})
                 logger.info(f"Jibble sync complete: {result.get('time_entries_synced', 0)} entries, "
-                           f"{result.get('people_synced', 0)} people")
+                           f"{result.get('people_synced', 0)} people, "
+                           f"month: {month_info.get('month', 'N/A')}")
             
             # Wait for next interval
             await asyncio.sleep(JIBBLE_SYNC_INTERVAL)

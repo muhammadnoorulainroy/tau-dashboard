@@ -1384,15 +1384,14 @@ def get_weekly_time_tracking(
 
 @router.post("/time-tracking/sync")
 def sync_time_tracking(
-    weeks: int = Query(2, ge=1, le=8, description="Number of weeks to sync"),
     db: Session = Depends(get_db)
 ):
-    """Sync Jibble time tracking data"""
+    """Sync Jibble time tracking data for current month"""
     from jibble_sync_service import JibbleSyncService
     
     try:
         sync_service = JibbleSyncService(db)
-        result = sync_service.full_sync(weeks=weeks)
+        result = sync_service.full_sync()
         return result
     except Exception as e:
         logger.error(f"Time tracking sync failed: {e}")
