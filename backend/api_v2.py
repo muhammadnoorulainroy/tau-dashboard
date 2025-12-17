@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
 # Code version - update when deploying to verify new code is running
-API_CODE_VERSION = "2025-12-17-v3-fix-fallback-bug"
+API_CODE_VERSION = "2025-12-17-v4-exclude-drafts-from-created"
 
 @router.get("/debug/version")
 def get_api_version():
@@ -1369,7 +1369,8 @@ def get_weekly_time_tracking(
         Task.trainer_email.isnot(None),
         Task.created_at >= start_of_week,
         Task.created_at <= end_of_week,
-        sqlfunc.lower(Task.trainer_email).in_(turing_email_set)
+        sqlfunc.lower(Task.trainer_email).in_(turing_email_set),
+        Task.status != 'draft'  # Don't count drafts as "new tasks"
     ).group_by(
         sqlfunc.lower(Task.trainer_email),
         cast(Task.created_at, Date)
