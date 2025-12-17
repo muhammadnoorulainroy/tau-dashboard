@@ -1586,9 +1586,11 @@ def get_weekly_time_tracking(
     # Review events that count as "+1 review":
     # - Expert Reviewer: expert_review_completed (approved), task_sent_to_rework_by_expert (rejected)
     # - POD Lead: pod_lead_review_completed (approved), task_sent_to_rework_by_pod_lead (rejected)
-    #   NOTE: both_reviews_completed is NOT counted separately - it's a status change, not a review action
-    #         It fires automatically when POD Lead completes (if Expert already done)
     # - Calibrator: task_approved_by_calibrator (approved), task_sent_to_rework_by_calibrator (rejected)
+    # 
+    # IMPORTANT: both_reviews_completed is counted ONLY if the reviewer doesn't have an individual
+    # review event on the same task. This prevents double-counting while still capturing reviews
+    # that were only recorded as both_reviews_completed (when reviewer finishes last).
     
     REVIEW_EVENTS = {
         'expert_review_completed': 'expert_reviewer',
@@ -1597,6 +1599,13 @@ def get_weekly_time_tracking(
         'task_sent_to_rework_by_pod_lead': 'pod_lead',
         'task_approved_by_calibrator': 'calibrator',
         'task_sent_to_rework_by_calibrator': 'calibrator',
+    }
+    
+    # Individual events per role (for checking if both_reviews_completed should be counted)
+    INDIVIDUAL_EVENTS_BY_ROLE = {
+        'expert_reviewer': {'expert_review_completed', 'task_sent_to_rework_by_expert'},
+        'pod_lead': {'pod_lead_review_completed', 'task_sent_to_rework_by_pod_lead'},
+        'calibrator': {'task_approved_by_calibrator', 'task_sent_to_rework_by_calibrator'},
     }
     
     # Reuse name_to_email_trainer from rework/approved section above
@@ -1609,14 +1618,17 @@ def get_weekly_time_tracking(
         if not task.task_history:
             continue
         
+        # Two-pass approach for each task to handle both_reviews_completed correctly
+        # Pass 1: Track individual review events and count them
+        # Pass 2: Count both_reviews_completed only if no individual event exists for that reviewer
+        
+        task_reviewers_with_individual_event = {}  # {reviewer_email: role}
+        both_reviews_events = []  # List of (reviewer_email, role, event_date_str) for second pass
+        
         for event in task.task_history:
             event_type = event.get('event', '').lower()
             initiated_by = event.get('initiated_by', '')
             created_at = event.get('created_at', '')
-            
-            # Check if this is a review event
-            if event_type not in REVIEW_EVENTS:
-                continue
             
             # Parse event date
             if not created_at:
@@ -1636,22 +1648,62 @@ def get_weekly_time_tracking(
             if initiated_by:
                 reviewer_email = name_to_email.get(initiated_by.lower().strip())
             
-            # If we couldn't find email by name, try to get from task fields based on role
-            if not reviewer_email:
+            # Handle individual review events
+            if event_type in REVIEW_EVENTS:
                 role = REVIEW_EVENTS[event_type]
-                if role == 'expert_reviewer' and task.expert_reviewer_email:
-                    reviewer_email = task.expert_reviewer_email.lower()
-                elif role == 'pod_lead' and task.pod_lead_email:
-                    reviewer_email = task.pod_lead_email.lower()
-                elif role == 'calibrator' and task.reviewer_email:
-                    reviewer_email = task.reviewer_email.lower()
+                
+                # If we couldn't find email by name, try to get from task fields based on role
+                if not reviewer_email:
+                    if role == 'expert_reviewer' and task.expert_reviewer_email:
+                        reviewer_email = task.expert_reviewer_email.lower()
+                    elif role == 'pod_lead' and task.pod_lead_email:
+                        reviewer_email = task.pod_lead_email.lower()
+                    elif role == 'calibrator' and task.reviewer_email:
+                        reviewer_email = task.reviewer_email.lower()
+                
+                if not reviewer_email:
+                    continue
+                
+                # Check if this reviewer is in our allowed list
+                if reviewer_email not in turing_email_lookup:
+                    continue
+                
+                # Track that this reviewer has an individual event
+                task_reviewers_with_individual_event[reviewer_email] = role
+                
+                # Count the review
+                if reviewer_email not in reviews_by_email_date:
+                    reviews_by_email_date[reviewer_email] = {}
+                if event_date_str not in reviews_by_email_date[reviewer_email]:
+                    reviews_by_email_date[reviewer_email][event_date_str] = 0
+                reviews_by_email_date[reviewer_email][event_date_str] += 1
             
-            if not reviewer_email:
-                continue
-            
-            # Check if this reviewer is in our allowed list
-            if reviewer_email not in turing_email_lookup:
-                continue
+            # Handle both_reviews_completed - save for second pass
+            elif event_type == 'both_reviews_completed':
+                if not reviewer_email:
+                    continue
+                
+                # Determine role based on task assignment
+                task_expert = (task.expert_reviewer_email or "").lower()
+                task_pod_lead = (task.pod_lead_email or "").lower()
+                task_calibrator = (task.reviewer_email or "").lower()
+                
+                role = None
+                if reviewer_email == task_expert:
+                    role = 'expert_reviewer'
+                elif reviewer_email == task_pod_lead:
+                    role = 'pod_lead'
+                elif reviewer_email == task_calibrator:
+                    role = 'calibrator'
+                
+                if role and reviewer_email in turing_email_lookup:
+                    both_reviews_events.append((reviewer_email, role, event_date_str))
+        
+        # Pass 2: Count both_reviews_completed only if no individual event exists
+        for reviewer_email, role, event_date_str in both_reviews_events:
+            # Check if this reviewer already has an individual event on this task
+            if reviewer_email in task_reviewers_with_individual_event:
+                continue  # Skip - already counted via individual event
             
             # Count the review
             if reviewer_email not in reviews_by_email_date:
