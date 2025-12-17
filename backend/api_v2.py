@@ -26,6 +26,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v2", tags=["v2"])
 
+# Code version - update when deploying to verify new code is running
+API_CODE_VERSION = "2025-12-17-v3-fix-fallback-bug"
+
+@router.get("/debug/version")
+def get_api_version():
+    """Debug endpoint to verify code version deployed"""
+    return {
+        "version": API_CODE_VERSION,
+        "description": "Individual review counting from task_history events",
+        "updated": "2025-12-17"
+    }
+
 
 # =============================================================================
 # DASHBOARD OVERVIEW
@@ -816,13 +828,12 @@ def get_pod_lead_aggregation(
             if event_type not in ['pod_lead_review_completed', 'task_sent_to_rework_by_pod_lead']:
                 continue
             
-            # Get reviewer email from initiated_by name or task field
+            # Get reviewer email from initiated_by name ONLY (not task field fallback)
+            # This ensures we count the actual person who did the review, not current assignment
             reviewer_email = name_to_email.get(initiated_by.lower().strip()) if initiated_by else None
-            if not reviewer_email and task.pod_lead_email:
-                reviewer_email = task.pod_lead_email.lower()
             
             if not reviewer_email:
-                continue
+                continue  # Skip if we can't determine who did the review
             
             key = reviewer_email.lower()
             
@@ -988,13 +999,12 @@ def get_calibrator_aggregation(
             if event_type not in ['task_approved_by_calibrator', 'task_sent_to_rework_by_calibrator']:
                 continue
             
-            # Get reviewer email from initiated_by name or task field
+            # Get reviewer email from initiated_by name ONLY (not task field fallback)
+            # This ensures we count the actual person who did the review, not current assignment
             reviewer_email = name_to_email.get(initiated_by.lower().strip()) if initiated_by else None
-            if not reviewer_email and task.reviewer_email:
-                reviewer_email = task.reviewer_email.lower()
             
             if not reviewer_email:
-                continue
+                continue  # Skip if we can't determine who did the review
             
             key = reviewer_email.lower()
             
@@ -1159,13 +1169,12 @@ def get_expert_reviewer_aggregation(
             if event_type not in ['expert_review_completed', 'task_sent_to_rework_by_expert']:
                 continue
             
-            # Get reviewer email from initiated_by name or task field
+            # Get reviewer email from initiated_by name ONLY (not task field fallback)
+            # This ensures we count the actual person who did the review, not current assignment
             reviewer_email = name_to_email.get(initiated_by.lower().strip()) if initiated_by else None
-            if not reviewer_email and task.expert_reviewer_email:
-                reviewer_email = task.expert_reviewer_email.lower()
             
             if not reviewer_email:
-                continue
+                continue  # Skip if we can't determine who did the review
             
             key = reviewer_email.lower()
             
@@ -1232,6 +1241,11 @@ def get_expert_reviewer_aggregation(
     
     # Sort by reviewed count descending (most active reviewers first)
     result.sort(key=lambda x: x["reviewed_count"], reverse=True)
+    
+    # Debug logging
+    logger.info(f"[expert-reviewers] Found {len(result)} expert reviewers (domain={domain})")
+    for r in result[:5]:  # Log top 5 for debugging
+        logger.info(f"  {r['expert_reviewer_email']}: approved={r['approved_count']}, rework={r['rework_count']}, reviewed={r['reviewed_count']}, total={r['total_tasks']}")
     
     return result
 

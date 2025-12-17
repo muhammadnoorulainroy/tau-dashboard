@@ -385,16 +385,19 @@ class TaskAgentService:
             fetch_details: If True, fetch full task details for instruction_text and tool_sequence
             name_email_lookup: Optional pre-built name-to-email lookup dict
         """
+        logger.info("[sync_tasks] Fetching all tasks from API...")
         tasks = self.fetch_all_tasks()
         count = 0
         updated = 0
         details_fetched = 0
+        history_refreshed = 0
         
         # Build email lookup if not provided
         if name_email_lookup is None:
+            logger.info("[sync_tasks] Building name-to-email lookup...")
             name_email_lookup = self.build_name_to_email_lookup(db)
         
-        logger.info(f"Processing {len(tasks)} tasks (fetch_details={fetch_details})...")
+        logger.info(f"[sync_tasks] Processing {len(tasks)} tasks (fetch_details={fetch_details})...")
         
         for i, task_data in enumerate(tasks):
             task_agent_id = task_data["id"]
@@ -532,8 +535,12 @@ class TaskAgentService:
             needs_details = needs_instruction or needs_tool_sequence or needs_history or needs_history_refresh
             if fetch_details and needs_details:
                 details_fetched += 1
-                if details_fetched % 50 == 0:
-                    logger.info(f"Fetching details: {details_fetched} tasks processed (current: {i + 1}/{len(tasks)})...")
+                if needs_history_refresh:
+                    history_refreshed += 1
+                
+                # Log progress every 25 details fetched
+                if details_fetched % 25 == 0:
+                    logger.info(f"[sync_tasks] Fetching task details: {details_fetched} fetched, {history_refreshed} history refreshed (task {i + 1}/{len(tasks)})...")
                 
                 detail = self.fetch_task_detail(task_agent_id)
                 if detail:
@@ -572,7 +579,11 @@ class TaskAgentService:
                     
                     # Store task_history
                     if detail.get("task_history"):
+                        old_history_count = len(task.task_history) if task.task_history else 0
+                        new_history_count = len(detail["task_history"])
                         task.task_history = detail["task_history"]
+                        if needs_history_refresh and new_history_count > old_history_count:
+                            logger.debug(f"[sync_tasks] Task {task_agent_id[:30]}... history updated: {old_history_count} -> {new_history_count} events")
             
             # Always extract rework attribution from task_history (even if already synced before)
             # This ensures the attribution logic is always up-to-date
@@ -595,12 +606,13 @@ class TaskAgentService:
             else:
                 updated += 1
             
-            # Commit in batches to avoid memory issues
-            if (count + updated) % 50 == 0:
+            # Log progress and commit in batches
+            if (count + updated) % 100 == 0:
+                logger.info(f"[sync_tasks] Progress: {count + updated}/{len(tasks)} tasks processed ({count} new, {updated} updated)...")
                 db.commit()
         
         db.commit()
-        logger.info(f"Synced tasks: {count} new, {updated} updated, {details_fetched} details fetched")
+        logger.info(f"[sync_tasks] Completed: {count} new, {updated} updated, {details_fetched} details fetched, {history_refreshed} task histories refreshed")
         return count + updated
     
     def update_environment_stats(self, db: Session) -> None:
