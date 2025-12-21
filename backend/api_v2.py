@@ -810,8 +810,8 @@ def get_pod_lead_aggregation(
             continue
         
         # Two-pass logic for both_reviews_completed handling
-        # Track which POD leads have individual events on this task
-        task_pod_lead_has_event = set()  # emails that have individual review events
+        # Track which POD leads have APPROVAL events on this task (not rework - those are separate actions)
+        task_pod_lead_has_approval = set()  # emails that have pod_lead_review_completed
         both_reviews_events = []  # (reviewer_email, initiated_by) tuples to process in pass 2
         
         # PASS 1: Count individual POD Lead events
@@ -829,7 +829,9 @@ def get_pod_lead_aggregation(
             
             # Handle individual POD Lead events
             if event_type in ['pod_lead_review_completed', 'task_sent_to_rework_by_pod_lead']:
-                task_pod_lead_has_event.add(key)
+                # Only track approvals for deduplication (rework is a separate action)
+                if event_type == 'pod_lead_review_completed':
+                    task_pod_lead_has_approval.add(key)
                 
                 # Initialize if not exists
                 if key not in pod_leads:
@@ -859,7 +861,8 @@ def get_pod_lead_aggregation(
             elif event_type == 'both_reviews_completed':
                 both_reviews_events.append((reviewer_email, initiated_by))
         
-        # PASS 2: Handle both_reviews_completed - only count if initiator is POD Lead and has no individual event
+        # PASS 2: Handle both_reviews_completed - only count if initiator is POD Lead and has no APPROVAL event
+        # (Rework events don't count - a reviewer can send to rework, then later approve via both_reviews_completed)
         for reviewer_email, initiated_by in both_reviews_events:
             key = reviewer_email.lower()
             
@@ -868,9 +871,9 @@ def get_pod_lead_aggregation(
             if key != task_pod_lead:
                 continue  # Not the POD Lead, skip
             
-            # Only count if no individual event exists
-            if key in task_pod_lead_has_event:
-                continue  # Already has individual event, skip
+            # Only count if no approval event exists (rework is a separate action)
+            if key in task_pod_lead_has_approval:
+                continue  # Already has approval event, skip
             
             # Initialize if not exists
             if key not in pod_leads:
@@ -1196,8 +1199,8 @@ def get_expert_reviewer_aggregation(
             continue
         
         # Two-pass logic for both_reviews_completed handling
-        # Track which experts have individual events on this task
-        task_expert_has_event = set()  # emails that have individual review events
+        # Track which experts have APPROVAL events on this task (not rework - those are separate actions)
+        task_expert_has_approval = set()  # emails that have expert_review_completed
         both_reviews_events = []  # (reviewer_email, initiated_by) tuples to process in pass 2
         
         # PASS 1: Count individual Expert Reviewer events
@@ -1215,7 +1218,9 @@ def get_expert_reviewer_aggregation(
             
             # Handle individual Expert Reviewer events
             if event_type in ['expert_review_completed', 'task_sent_to_rework_by_expert']:
-                task_expert_has_event.add(key)
+                # Only track approvals for deduplication (rework is a separate action)
+                if event_type == 'expert_review_completed':
+                    task_expert_has_approval.add(key)
                 
                 # Initialize if not exists
                 if key not in expert_reviewers:
@@ -1245,7 +1250,8 @@ def get_expert_reviewer_aggregation(
             elif event_type == 'both_reviews_completed':
                 both_reviews_events.append((reviewer_email, initiated_by))
         
-        # PASS 2: Handle both_reviews_completed - only count if initiator is Expert and has no individual event
+        # PASS 2: Handle both_reviews_completed - only count if initiator is Expert and has no APPROVAL event
+        # (Rework events don't count - a reviewer can send to rework, then later approve via both_reviews_completed)
         for reviewer_email, initiated_by in both_reviews_events:
             key = reviewer_email.lower()
             
@@ -1254,9 +1260,9 @@ def get_expert_reviewer_aggregation(
             if key != task_expert:
                 continue  # Not the Expert, skip
             
-            # Only count if no individual event exists
-            if key in task_expert_has_event:
-                continue  # Already has individual event, skip
+            # Only count if no approval event exists (rework is a separate action)
+            if key in task_expert_has_approval:
+                continue  # Already has approval event, skip
             
             # Initialize if not exists
             if key not in expert_reviewers:
@@ -1590,9 +1596,13 @@ def get_weekly_time_tracking(
         if not task.task_history:
             continue
         
-        # Two-pass logic: track which reviewers have individual events for this task
-        task_reviewers_with_event = {}  # {email: role} for those who have individual events
+        # Two-pass logic: track which reviewers have APPROVAL events for this task
+        # (not rework - those are separate actions, and we should count both_reviews_completed after rework)
+        task_reviewers_with_approval = set()  # emails that have individual approval events
         both_reviews_events_for_task = []  # (initiated_by, created_at) tuples
+        
+        # Approval events (for deduplication with both_reviews_completed)
+        APPROVAL_EVENTS = {'expert_review_completed', 'pod_lead_review_completed', 'task_approved_by_calibrator'}
         
         # PASS 1: Count individual review events
         for event in task.task_history:
@@ -1634,9 +1644,9 @@ def get_weekly_time_tracking(
             if reviewer_email not in turing_email_lookup:
                 continue
             
-            # Track that this reviewer has an individual event for this task
-            role = REVIEW_EVENTS[event_type]
-            task_reviewers_with_event[reviewer_email.lower()] = role
+            # Track only APPROVAL events for deduplication (rework is a separate action)
+            if event_type in APPROVAL_EVENTS:
+                task_reviewers_with_approval.add(reviewer_email.lower())
             
             # Count the review
             if reviewer_email not in reviews_by_email_date:
@@ -1676,9 +1686,10 @@ def get_weekly_time_tracking(
             is_pod_lead = reviewer_email_lower == task_pod_lead
             is_expert = reviewer_email_lower == task_expert
             
-            # Only count if they don't already have an individual event for this task
-            if reviewer_email_lower in task_reviewers_with_event:
-                continue  # Already counted
+            # Only count if they don't already have an APPROVAL event for this task
+            # (Rework events don't count - a reviewer can send to rework, then later approve via both_reviews_completed)
+            if reviewer_email_lower in task_reviewers_with_approval:
+                continue  # Already has approval event, skip
             
             # Check role and count
             if is_pod_lead or is_expert:
