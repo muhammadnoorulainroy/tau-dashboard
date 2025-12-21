@@ -385,19 +385,17 @@ class TaskAgentService:
             fetch_details: If True, fetch full task details for instruction_text and tool_sequence
             name_email_lookup: Optional pre-built name-to-email lookup dict
         """
-        logger.info("[sync_tasks] Fetching all tasks from API...")
         tasks = self.fetch_all_tasks()
         count = 0
         updated = 0
         details_fetched = 0
-        history_refreshed = 0
+        history_refreshed = 0  # Track tasks that got history refresh on status transition
         
         # Build email lookup if not provided
         if name_email_lookup is None:
-            logger.info("[sync_tasks] Building name-to-email lookup...")
             name_email_lookup = self.build_name_to_email_lookup(db)
         
-        logger.info(f"[sync_tasks] Processing {len(tasks)} tasks (fetch_details={fetch_details})...")
+        logger.info(f"Processing {len(tasks)} tasks (fetch_details={fetch_details})...")
         
         for i, task_data in enumerate(tasks):
             task_agent_id = task_data["id"]
@@ -414,7 +412,11 @@ class TaskAgentService:
             # Basic fields
             task.description = task_data.get("description")
             task.difficulty = task_data.get("difficulty")
-            task.status = task_data.get("status")
+            
+            # Track status transition for history refresh
+            old_status = task.status
+            new_status = task_data.get("status")
+            task.status = new_status
             
             # Trainer
             task.trainer_id = task_data.get("trainer_id")
@@ -521,7 +523,6 @@ class TaskAgentService:
             # These are the only states where review events can be added:
             # - Tasks waiting for or in any review stage
             # - Tasks in rework (may be resubmitted)
-            # Draft and approved tasks are stable and don't need refresh
             active_review_states = [
                 'pending_review',      # Waiting for expert review
                 'in_expert_review',    # Being reviewed by expert
@@ -530,17 +531,37 @@ class TaskAgentService:
                 'in_pod_lead_review',  # Being reviewed by POD lead
                 'rework'               # May have review events from rejection
             ]
-            needs_history_refresh = task.status in active_review_states
+            
+            # Check if task is currently in an active review state
+            needs_history_refresh = new_status in active_review_states
+            
+            # IMPORTANT: Also refresh history when a task TRANSITIONED OUT of active review
+            # This captures events that happened before the transition:
+            # - approved: captures final approval event
+            # - draft: captures rework events when trainer withdrew submission
+            if old_status in active_review_states and new_status in ['approved', 'draft']:
+                needs_history_refresh = True
+                history_refreshed += 1
+            
+            # Also refresh if the task HAS history but we detect the history might be stale
+            # (task was previously reviewed but is now back in draft)
+            if new_status == 'draft' and task.task_history:
+                # Check if the existing history has any review events
+                has_review_events = any(
+                    'review' in e.get('event', '').lower() or 
+                    'rework' in e.get('event', '').lower() or
+                    'approved' in e.get('event', '').lower() or
+                    'calibrator' in e.get('event', '').lower()
+                    for e in task.task_history
+                )
+                if has_review_events:
+                    needs_history_refresh = True
             
             needs_details = needs_instruction or needs_tool_sequence or needs_history or needs_history_refresh
             if fetch_details and needs_details:
                 details_fetched += 1
-                if needs_history_refresh:
-                    history_refreshed += 1
-                
-                # Log progress every 25 details fetched
-                if details_fetched % 25 == 0:
-                    logger.info(f"[sync_tasks] Fetching task details: {details_fetched} fetched, {history_refreshed} history refreshed (task {i + 1}/{len(tasks)})...")
+                if details_fetched % 50 == 0:
+                    logger.info(f"Fetching details: {details_fetched} tasks processed (current: {i + 1}/{len(tasks)})...")
                 
                 detail = self.fetch_task_detail(task_agent_id)
                 if detail:
@@ -579,11 +600,7 @@ class TaskAgentService:
                     
                     # Store task_history
                     if detail.get("task_history"):
-                        old_history_count = len(task.task_history) if task.task_history else 0
-                        new_history_count = len(detail["task_history"])
                         task.task_history = detail["task_history"]
-                        if needs_history_refresh and new_history_count > old_history_count:
-                            logger.debug(f"[sync_tasks] Task {task_agent_id[:30]}... history updated: {old_history_count} -> {new_history_count} events")
             
             # Always extract rework attribution from task_history (even if already synced before)
             # This ensures the attribution logic is always up-to-date
@@ -606,13 +623,12 @@ class TaskAgentService:
             else:
                 updated += 1
             
-            # Log progress and commit in batches
-            if (count + updated) % 100 == 0:
-                logger.info(f"[sync_tasks] Progress: {count + updated}/{len(tasks)} tasks processed ({count} new, {updated} updated)...")
+            # Commit in batches to avoid memory issues
+            if (count + updated) % 50 == 0:
                 db.commit()
         
         db.commit()
-        logger.info(f"[sync_tasks] Completed: {count} new, {updated} updated, {details_fetched} details fetched, {history_refreshed} task histories refreshed")
+        logger.info(f"Synced tasks: {count} new, {updated} updated, {details_fetched} details fetched, {history_refreshed} histories refreshed on approval")
         return count + updated
     
     def update_environment_stats(self, db: Session) -> None:

@@ -115,7 +115,6 @@ class JibbleService:
             params = {
                 "$top": page_size,
                 "$skip": skip,
-                "$select": "id,email,fullName,status",  # Must explicitly select email field
             }
             
             try:
