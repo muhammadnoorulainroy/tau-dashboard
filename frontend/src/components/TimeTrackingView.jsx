@@ -115,12 +115,24 @@ export default function TimeTrackingView() {
     return `${h}h ${m}m`;
   };
 
-  const getHoursColor = (hours) => {
+  // Color for daily hours: > 8h 15m is over limit (red), 7-8h 15m is good (green)
+  const getDailyHoursColor = (hours) => {
     if (!hours || hours === 0) return 'text-gray-400';
-    if (hours >= 8) return 'text-green-600';
-    if (hours >= 6) return 'text-yellow-600';
-    if (hours >= 4) return 'text-orange-500';
-    return 'text-red-500';
+    if (hours > 8.25) return 'text-red-600 font-bold';  // Over 8h 15m/day limit
+    if (hours >= 7) return 'text-green-600';            // Good (7h - 8h 15m)
+    if (hours >= 5) return 'text-yellow-600';           // Acceptable (5-7h)
+    if (hours >= 3) return 'text-orange-500';           // Low (3-5h)
+    return 'text-gray-500';                             // Very low (<3h)
+  };
+
+  // Color for weekly total: > 40h is over limit (red), 35-40h is good (green)
+  const getWeeklyHoursColor = (hours) => {
+    if (!hours || hours === 0) return 'text-gray-400';
+    if (hours > 40) return 'text-red-600 font-bold'; // Over 40h/week limit
+    if (hours >= 35) return 'text-green-600';        // Good (35-40h)
+    if (hours >= 25) return 'text-yellow-600';       // Acceptable (25-35h)
+    if (hours >= 15) return 'text-orange-500';       // Low (15-25h)
+    return 'text-gray-500';                          // Very low (<15h)
   };
 
   const getDates = () => {
@@ -407,7 +419,7 @@ export default function TimeTrackingView() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-center whitespace-nowrap">
-                    <span className={`font-semibold text-sm ${getHoursColor(trainer.total_hours)}`}>
+                    <span className={`font-semibold text-sm ${getWeeklyHoursColor(trainer.total_hours)}`}>
                       {formatHours(trainer.total_hours)}
                     </span>
                   </td>
@@ -420,7 +432,7 @@ export default function TimeTrackingView() {
                     return (
                       <td key={date.key} className="px-2 py-3 text-center">
                         <div className="flex justify-center items-center gap-2 text-xs">
-                          <span className={`font-medium ${getHoursColor(hours)}`}>{formatHours(hours)}</span>
+                          <span className={`font-medium ${getDailyHoursColor(hours)}`}>{formatHours(hours)}</span>
                           <span className={`w-5 text-center ${created > 0 ? 'text-green-600 font-medium' : 'text-gray-300'}`}>
                             {created || '-'}
                           </span>
