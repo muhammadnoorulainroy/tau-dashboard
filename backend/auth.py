@@ -30,7 +30,8 @@ ADDITIONAL_ALLOWED_EMAILS = [
     'chirag.rade@turing.com',
     'ibrahim.u@turing.com',
     'kamal.m@turing.com',
-    'zamir.f@turing.com'
+    'zamir.f@turing.com',
+    'cameron.l@turing.com'
 ]
 
 # Security scheme for Bearer token
